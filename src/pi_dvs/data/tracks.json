@@ -1,0 +1,57 @@
+[
+  {
+    "id": "after-hours",
+    "title": "After Hours",
+    "artist": "Soft Circuit",
+    "duration": 342,
+    "artwork": "artwork/amber.svg"
+  },
+  {
+    "id": "tidal",
+    "title": "Tidal Memory",
+    "artist": "North Passage",
+    "duration": 428,
+    "artwork": "artwork/teal.svg"
+  },
+  {
+    "id": "blue-hour",
+    "title": "Blue Hour",
+    "artist": "Mira & The Machines",
+    "duration": 305,
+    "artwork": "artwork/blue.svg"
+  },
+  {
+    "id": "cafe",
+    "title": "Café Lumière",
+    "artist": "Élan",
+    "duration": 387,
+    "artwork": "artwork/rose.svg"
+  },
+  {
+    "id": "return",
+    "title": "Return to Sender",
+    "artist": "Soft Circuit",
+    "duration": 361,
+    "artwork": "artwork/teal.svg"
+  },
+  {
+    "id": "satellite",
+    "title": "Satellite Garden",
+    "artist": "Second Nature",
+    "duration": 472,
+    "artwork": "artwork/amber.svg"
+  },
+  {
+    "id": "untitled",
+    "title": "Untitled 07",
+    "artist": "Studio Notes",
+    "duration": 254
+  },
+  {
+    "id": "archive",
+    "title": "Archive Tape",
+    "artist": "Unknown Signals",
+    "duration": 318,
+    "available": false
+  }
+]

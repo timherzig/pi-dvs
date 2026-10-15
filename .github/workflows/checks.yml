@@ -1,0 +1,28 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked pytest
+      - run: uv build
