@@ -46,18 +46,18 @@ playlists and real Rekordbox imports are follow-up work.
 ## Development
 
 ```sh
-uv sync --locked
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked pytest
-uv build
+make setup
+make check
+make package
 ```
 
 Tests cover independent decks, pending-load replacement/cancellation, failures and
 recovery, playback protection, search, missing artwork, and real QML button/search
 bindings. UI tests use Qt's offscreen software renderer. CI runs these checks on
 macOS and Linux; audio performance and real-device behavior require later hardware
-tests. `uv build` packages the QML and demo assets into the wheel and source archive.
+tests. `make package` builds and smoke-tests an installed wheel with its QML and
+demo assets. See [CONTRIBUTING.md](CONTRIBUTING.md) for coding standards and hooks,
+and [the release workflow](docs/releasing.md) for CI/CD, promotion, and rollback.
 
 ```text
 src/pi_dvs/

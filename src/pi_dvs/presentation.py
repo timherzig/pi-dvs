@@ -5,8 +5,10 @@ from time import monotonic
 from PySide6.QtCore import (
     Property,
     QAbstractListModel,
+    QByteArray,
     QModelIndex,
     QObject,
+    QPersistentModelIndex,
     Qt,
     QTimer,
     Signal,
@@ -36,15 +38,20 @@ class TrackListModel(QAbstractListModel):
         super().__init__(parent)
         self._tracks = tracks
 
-    def roleNames(self) -> dict[int, bytes]:
+    def roleNames(self) -> dict[int, QByteArray]:
         return {
-            int(Qt.ItemDataRole.UserRole) + i: name.encode() for i, name in enumerate(self._roles)
+            int(Qt.ItemDataRole.UserRole) + i: QByteArray(name.encode())
+            for i, name in enumerate(self._roles)
         }
 
-    def rowCount(self, parent: QModelIndex | None = None) -> int:
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex | None = None) -> int:
         return 0 if parent is not None and parent.isValid() else len(self._tracks)
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> str | bool | None:
         if not index.isValid() or not 0 <= index.row() < len(self._tracks):
             return None
         track = self._tracks[index.row()]
@@ -84,7 +91,7 @@ class Controller(QObject):
         self._timer.start()
 
     @Property(QObject, constant=True)
-    def libraryModel(self):
+    def libraryModel(self) -> TrackListModel:
         return self._model
 
     @Property(int, notify=searchChanged)
@@ -95,16 +102,16 @@ class Controller(QObject):
     def totalTracks(self) -> int:
         return len(self._library.tracks)
 
-    @Property(str, notify=searchChanged)
-    def query(self) -> str:
+    def _get_query(self) -> str:
         return self._query
 
-    @query.setter
-    def query(self, value: str) -> None:
+    def _set_query(self, value: str) -> None:
         if value != self._query:
             self._query = value
             self._model.replace_tracks(self._library.search(value))
             self.searchChanged.emit()
+
+    query = Property(str, _get_query, _set_query, notify=searchChanged)
 
     @Property(str, notify=noticeChanged)
     def notice(self) -> str:
@@ -114,8 +121,8 @@ class Controller(QObject):
         self._notice = notice
         self.noticeChanged.emit()
 
-    @Property("QVariantList", notify=decksChanged)
-    def decks(self) -> list[dict]:
+    @Property(list, notify=decksChanged)
+    def decks(self) -> list[dict[str, str | bool | float]]:
         return [
             dict(
                 title=state.track.title if state.track else "Choose a track",
