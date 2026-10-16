@@ -20,7 +20,8 @@ class Status(StrEnum):
     LOADING = "Loading"
     READY = "Ready"
     PLAYING = "Playing"
-    PAUSED = "Paused"
+    STOPPED = "Stopped"
+    FINISHED = "Finished"
     ERROR = "Unavailable"
 
 
@@ -30,3 +31,10 @@ class DeckState:
     status: Status = Status.EMPTY
     position: float = 0.0
     error: str = ""
+    needle_down: bool = False
+    platter_spinning: bool = False
+
+    @property
+    def can_change_track(self) -> bool:
+        """The simulator locks track changes while the needle reads a moving record."""
+        return not (self.needle_down and self.platter_spinning)

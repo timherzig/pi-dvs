@@ -33,15 +33,28 @@ A separate Python or Qt installation is unnecessary.
 - Search by title or artist; search ignores case and accents. Cmd+F focuses search;
   Escape or the clear button removes the query.
 - Click **Load A** or **Load B** beside a track. Each deck moves from Loading to Ready.
-- **Play / Pause** advances a simulated timer. **Unload** clears a paused deck.
-- Pause a playing deck before loading another track or unloading it.
+- In **Simulated vinyl**, use **Start platter** and **Lower needle** for that deck.
+  Both are needed for the silent playback timer to advance. There is no Play/Pause button.
+- **Stop platter** or **Lift needle** holds the position. Starting/lowering again resumes
+  there; each deck has its own controls.
+- Loading, replacing, and unloading are blocked while the needle is down and the
+  record is moving. Stopping the record is enough to allow a change, even with the
+  needle down. A lifted needle also allows changes on a spinning platter.
+- A finished track stays at its end. To start over in this demo, stop the record or
+  lift the needle and reload the track. The platter/needle controls keep their state
+  across load and unload.
 - Search for **Café** using `cafe`, or for **Untitled** to see the artwork fallback.
 - Load **Archive Tape** to exercise a failed load, then load another track to recover.
 
 The eight tracks and four SVG covers are original demo fixtures. No music is
-bundled and no audio is produced. Play/Pause tests interface behavior; it does not
-decode files, read timecode, or connect to an audio device. Search is a flat list;
-playlists and real Rekordbox imports are follow-up work.
+bundled and no audio is produced. The simulator uses constant forward speed and
+explicit needle/platter inputs; it does not decode files, read timecode, detect a
+physical needle, or connect to an audio device. Needle drops currently resume the
+held position. [Absolute position, reverse motion, and scratching](https://github.com/timherzig/pi-dvs/issues/12)
+will follow the real vinyl in a later milestone. [Reliable needle-up detection](https://github.com/timherzig/pi-dvs/issues/13)
+is separate research for a possible stricter loading rule: silence or zero speed
+alone does not distinguish a lifted needle from a stationary record. Search is a
+flat list; playlists and real Rekordbox imports are follow-up work.
 
 ## Development
 
@@ -52,7 +65,8 @@ make package
 ```
 
 Tests cover independent decks, pending-load replacement/cancellation, failures and
-recovery, playback protection, search, missing artwork, and real QML button/search
+recovery, vinyl-driven transport, track-change protection, end-of-track behavior,
+search, missing artwork, and real QML button/search
 bindings. UI tests use Qt's offscreen software renderer. CI runs these checks on
 macOS and Linux; audio performance and real-device behavior require later hardware
 tests. `make package` builds and smoke-tests an installed wheel with its QML and
@@ -92,6 +106,8 @@ The follow-up tickets include acceptance criteria and dependencies:
 4. [Run on a Pi touchscreen](https://github.com/timherzig/pi-dvs/issues/5).
 5. [Handle USB insertion/removal](https://github.com/timherzig/pi-dvs/issues/6).
 6. [Boot and recover as an appliance](https://github.com/timherzig/pi-dvs/issues/7).
+7. [Drive playback from absolute vinyl position](https://github.com/timherzig/pi-dvs/issues/12).
+8. [Research reliable needle-up detection](https://github.com/timherzig/pi-dvs/issues/13).
 
 [Waxcode](https://www.waxcode.co/) and its
 [xwax fork](https://github.com/mhallrp/waxcode-xwax) are reference projects. No

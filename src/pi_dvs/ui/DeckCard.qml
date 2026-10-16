@@ -96,27 +96,20 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             ActionButton {
-                objectName: "play" + card.deckName
-                text: card.deckState.playing ? "Pause" : "Play"
-                accent: card.accent
-                filled: true
-                enabled: card.deckState.canPlay
-                onClicked: card.controller.togglePlayback(card.deckIndex)
-                Accessible.name: text + " deck " + card.deckName
-            }
-            ActionButton {
                 objectName: "unload" + card.deckName
                 text: "Unload"
                 enabled: card.deckState.canUnload
                 onClicked: card.controller.unload(card.deckIndex)
                 Accessible.name: "Unload deck " + card.deckName
             }
-            Item { Layout.fillWidth: true }
             Text {
-                visible: card.deckState.status === "Loading"
-                text: "Loading…"
+                text: (card.deckState.needleDown ? "Needle down" : "Needle lifted")
+                      + " · " + (card.deckState.platterSpinning ? "Spinning" : "Stopped")
                 color: "#99a6af"
-                font.pixelSize: 12
+                font.pixelSize: 11
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
             }
         }
         Text {
