@@ -8,9 +8,9 @@ ApplicationWindow {
     objectName: "mainWindow"
     visible: true
     width: 1020
-    height: 800
+    height: 900
     minimumWidth: 780
-    minimumHeight: 700
+    minimumHeight: 800
     title: "pi-dvs · Desktop demo"
     color: "#121619"
     font.family: "Helvetica Neue"
@@ -63,6 +63,10 @@ ApplicationWindow {
                     deckState: window.controller.decks[index]
                 }
             }
+        }
+        VinylSimulator {
+            Layout.fillWidth: true
+            controller: window.controller
         }
         RowLayout {
             Layout.fillWidth: true
@@ -242,7 +246,7 @@ ApplicationWindow {
             }
             Item { Layout.fillWidth: true }
             Text {
-                text: "Pause a deck to replace its track"
+                text: "Stop the record or lift the needle to change tracks"
                 color: "#687985"
                 font.pixelSize: 11
             }

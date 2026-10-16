@@ -136,9 +136,10 @@ class Controller(QObject):
                 progress=state.position / state.track.duration
                 if state.track and state.track.duration
                 else 0.0,
-                canPlay=state.status in (Status.READY, Status.PLAYING, Status.PAUSED),
-                canLoad=state.status != Status.PLAYING,
-                canUnload=state.track is not None and state.status != Status.PLAYING,
+                canLoad=state.can_change_track,
+                canUnload=state.track is not None and state.can_change_track,
+                needleDown=state.needle_down,
+                platterSpinning=state.platter_spinning,
                 playing=state.status == Status.PLAYING,
                 error=state.error,
             )
@@ -147,6 +148,7 @@ class Controller(QObject):
 
     @Slot(int, str)
     def loadTrack(self, deck: int, track_id: str) -> None:
+        self._tick()
         try:
             self._engine.load(deck, self._library.get(track_id))
         except (KeyError, ValueError) as error:
@@ -155,17 +157,23 @@ class Controller(QObject):
         self._set_notice("")
         self.decksChanged.emit()
 
-    @Slot(int)
-    def togglePlayback(self, deck: int) -> None:
-        was_playing = self._engine.decks[deck].status == Status.PLAYING
+    @Slot(int, bool)
+    def setNeedleDown(self, deck: int, down: bool) -> None:
         self._tick()
-        # Reaching the end during a Pause click already stops playback.
-        if not was_playing or self._engine.decks[deck].status == Status.PLAYING:
-            self._engine.toggle(deck)
+        self._engine.set_needle(deck, down)
+        self._set_notice("")
+        self.decksChanged.emit()
+
+    @Slot(int, bool)
+    def setPlatterSpinning(self, deck: int, spinning: bool) -> None:
+        self._tick()
+        self._engine.set_platter(deck, spinning)
+        self._set_notice("")
         self.decksChanged.emit()
 
     @Slot(int)
     def unload(self, deck: int) -> None:
+        self._tick()
         try:
             self._engine.unload(deck)
         except ValueError as error:

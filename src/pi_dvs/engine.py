@@ -1,13 +1,27 @@
-"""Silent demo transport. Elapsed time is supplied by the caller, not a GUI timer.
+"""Silent vinyl simulation. Elapsed time is supplied by the caller.
 
-The public methods are the current engine interface. A real engine will own its
-state and report confirmed loads; it must not infer playback from a sent command.
+Needle and platter inputs are explicit simulated values, not hardware detection.
+A real engine must report confirmed transport, position, and load state.
 """
 
 import math
 from dataclasses import replace
 
 from pi_dvs.model import DeckState, Status, Track
+
+
+def _follow_vinyl(state: DeckState) -> DeckState:
+    if state.track is None or state.status in (Status.LOADING, Status.ERROR):
+        return state
+    if state.position >= state.track.duration:
+        status = Status.FINISHED
+    elif not state.needle_down:
+        status = Status.READY
+    elif not state.platter_spinning:
+        status = Status.STOPPED
+    else:
+        status = Status.PLAYING
+    return replace(state, status=status)
 
 
 class DemoEngine:
@@ -28,50 +42,54 @@ class DemoEngine:
 
     def load(self, deck: int, track: Track) -> None:
         state = self._deck(deck)
-        if state.status == Status.PLAYING:
-            raise ValueError("Pause this deck before loading another track")
-        self._decks[deck] = DeckState(track=track, status=Status.LOADING)
+        if not state.can_change_track:
+            raise ValueError("Stop the record or lift the needle before changing tracks")
+        self._decks[deck] = replace(
+            state, track=track, status=Status.LOADING, position=0.0, error=""
+        )
         self._pending[deck] = self.LOAD_SECONDS
 
     def unload(self, deck: int) -> None:
         state = self._deck(deck)
-        if state.status == Status.PLAYING:
-            raise ValueError("Pause this deck before unloading its track")
+        if not state.can_change_track:
+            raise ValueError("Stop the record or lift the needle before changing tracks")
         self._pending.pop(deck, None)
-        self._decks[deck] = DeckState()
+        self._decks[deck] = replace(state, track=None, status=Status.EMPTY, position=0.0, error="")
 
-    def toggle(self, deck: int) -> None:
-        state = self._deck(deck)
-        if state.status == Status.PLAYING:
-            self._decks[deck] = replace(state, status=Status.PAUSED)
-        elif state.track and state.status in (Status.READY, Status.PAUSED):
-            position = 0.0 if state.position >= state.track.duration else state.position
-            self._decks[deck] = replace(state, status=Status.PLAYING, position=position)
+    def set_needle(self, deck: int, down: bool) -> None:
+        self._decks[deck] = _follow_vinyl(replace(self._deck(deck), needle_down=down))
+
+    def set_platter(self, deck: int, spinning: bool) -> None:
+        self._decks[deck] = _follow_vinyl(replace(self._deck(deck), platter_spinning=spinning))
 
     def advance(self, seconds: float) -> bool:
         if not math.isfinite(seconds) or seconds < 0:
             raise ValueError("Elapsed time must be finite and nonnegative")
         before = self.decks
         for deck, state in enumerate(self._decks):
+            playing_seconds = seconds
             if state.status == Status.LOADING:
-                self._pending[deck] -= seconds
-                if self._pending[deck] <= 0:
-                    self._pending.pop(deck)
-                    assert state.track is not None
-                    if state.track.available:
-                        self._decks[deck] = replace(state, status=Status.READY)
-                    else:
-                        self._decks[deck] = replace(
-                            state,
-                            status=Status.ERROR,
-                            error="This demo track is unavailable. Try another track.",
-                        )
-            elif state.status == Status.PLAYING:
+                remaining = self._pending[deck]
+                if seconds < remaining:
+                    self._pending[deck] = remaining - seconds
+                    continue
+                self._pending.pop(deck)
                 assert state.track is not None
-                position = min(state.position + seconds, state.track.duration)
-                self._decks[deck] = replace(
-                    state,
-                    position=position,
-                    status=Status.READY if position >= state.track.duration else Status.PLAYING,
+                if state.track.available:
+                    state = _follow_vinyl(replace(state, status=Status.READY))
+                else:
+                    state = replace(
+                        state,
+                        status=Status.ERROR,
+                        error="This demo track is unavailable. Try another track.",
+                    )
+                playing_seconds = seconds - remaining
+            if state.status == Status.PLAYING:
+                assert state.track is not None
+                state = _follow_vinyl(
+                    replace(
+                        state, position=min(state.position + playing_seconds, state.track.duration)
+                    )
                 )
+            self._decks[deck] = state
         return self.decks != before
