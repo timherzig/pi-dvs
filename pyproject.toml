@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pi-dvs"
+version = "0.1.0"
+description = "A minimal two-deck DVS interface, starting with a macOS demo"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+dependencies = [
+    # Qt 6.10 supports macOS 13; newer Qt releases raise the minimum OS version.
+    "PySide6-Essentials>=6.10,<6.11",
+]
+
+[project.scripts]
+pi-dvs = "pi_dvs.app:main"
+
+[dependency-groups]
+build = [
+    "hatchling==1.32.4",
+]
+dev = [
+    "mypy>=2,<3",
+    "pre-commit>=4,<5",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.17,<0.18",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi_dvs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=pi_dvs --cov-branch --cov-report=term-missing --cov-report=xml"
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.mypy]
+files = ["src", "scripts"]
+python_version = "3.12"
+strict = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
