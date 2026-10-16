@@ -157,8 +157,11 @@ class Controller(QObject):
 
     @Slot(int)
     def togglePlayback(self, deck: int) -> None:
+        was_playing = self._engine.decks[deck].status == Status.PLAYING
         self._tick()
-        self._engine.toggle(deck)
+        # Reaching the end during a Pause click already stops playback.
+        if not was_playing or self._engine.decks[deck].status == Status.PLAYING:
+            self._engine.toggle(deck)
         self.decksChanged.emit()
 
     @Slot(int)
