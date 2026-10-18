@@ -10,8 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "Apache-2.0"
 dependencies = [
+    "pillow>=12.3,<14",
     # Qt 6.10 supports macOS 13; newer Qt releases raise the minimum OS version.
     "PySide6-Essentials>=6.10,<6.11",
+    "rekordbox-pdb @ https://github.com/fragmede/rekordbox-pdb/archive/ee3bac2f22ca11a5ce61eea35f8cb951c246eaef.tar.gz",
+    "sqlcipher3==0.6.4",
 ]
 
 [project.scripts]
@@ -41,7 +44,7 @@ fail_under = 85
 show_missing = true
 
 [tool.mypy]
-files = ["src", "scripts"]
+files = ["src", "scripts", "tests/fixtures/build_exports.py"]
 python_version = "3.12"
 strict = true
 
@@ -51,3 +54,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+
+[tool.hatch.metadata]
+allow-direct-references = true

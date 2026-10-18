@@ -1,8 +1,9 @@
 # pi-dvs
 
 A small standalone digital vinyl system for a Raspberry Pi, Xone PX5 mixer,
-and Serato NoiseMap control vinyl. The first milestone is a **silent desktop
-demo**: browse a searchable sample library and load two independent decks.
+and Serato NoiseMap control vinyl. The desktop app browses real Rekordbox USB exports and loads two independent
+decks. Transport is still a **silent simulation**; real audio follows in the
+xwax integration milestone.
 
 ## Run on your Mac
 
@@ -53,8 +54,37 @@ physical needle, or connect to an audio device. Needle drops currently resume th
 held position. [Absolute position, reverse motion, and scratching](https://github.com/timherzig/pi-dvs/issues/12)
 will follow the real vinyl in a later milestone. [Reliable needle-up detection](https://github.com/timherzig/pi-dvs/issues/13)
 is separate research for a possible stricter loading rule: silence or zero speed
-alone does not distinguish a lifted needle from a stationary record. Search is a
-flat list; playlists and real Rekordbox imports are follow-up work.
+alone does not distinguish a lifted needle from a stationary record. The bundled demo remains available alongside real USB imports.
+
+## Browse your Rekordbox USB
+
+Click **Open USB…** and choose the mounted drive's root folder (the one containing
+`PIONEER`). Import runs in the background; **Cancel** keeps your current library.
+You can also open a drive at startup:
+
+```sh
+uv run --locked pi-dvs --library /Volumes/TIM
+```
+
+The path is an example: any already-mounted supported export can be selected.
+Use **Playlists** to browse exported folders and playlists in their saved order,
+or browse **Artist**, **Album**, **Genre**, **BPM** (five-BPM bands), and **Key**.
+**Back** moves up the hierarchy. **All tracks** sorts by title and keeps title/artist search across
+the whole library; inside a playlist or category, search filters that view.
+Category lists search their names. Search ignores case and accents.
+Select a track and use **Load A/B**, or Ctrl+1/Ctrl+2. Audio files are checked again
+before loading; missing or unsupported files have a reason and disabled load buttons.
+The deck transport remains simulated and does not produce sound.
+
+**Auto** uses traditional Device Library (`export.pdb`) first and falls back to
+OneLibrary (`exportLibrary.db`) with a visible notice if necessary. The format
+selector can switch the current drive to either library. Their records are never
+merged, since the two exports can differ. **Refresh** rereads the active source;
+a failed import preserves the last usable catalog and loaded decks.
+
+The application reads source media only. Artwork is cached on the computer;
+missing or undecodable covers use the existing fallback. See
+[USB formats, limitations, and verification](docs/rekordbox.md) for details.
 
 ## Development
 
@@ -66,7 +96,7 @@ make package
 
 Tests cover independent decks, pending-load replacement/cancellation, failures and
 recovery, vinyl-driven transport, track-change protection, end-of-track behavior,
-search, missing artwork, and real QML button/search
+search, real USB import, nested playlists, missing artwork, and real QML button/search
 bindings. UI tests use Qt's offscreen software renderer. CI runs these checks on
 macOS and Linux; audio performance and real-device behavior require later hardware
 tests. `make package` builds and smoke-tests an installed wheel with its QML and
@@ -77,7 +107,9 @@ and [the release workflow](docs/releasing.md) for CI/CD, promotion, and rollback
 src/pi_dvs/
   app.py              startup and composition
   model.py            immutable track and deck values
-  library.py          demo catalog and metadata search
+  library.py          catalog, metadata search and playlist/category browsing
+  rekordbox/          read-only DeviceSQL and encrypted OneLibrary adapters
+  jobs.py             cancellable background media I/O
   engine.py           deterministic, silent two-deck simulation
   presentation.py     Qt models, actions and timer
   ui/                 QML interface
@@ -88,10 +120,10 @@ tests/                behavior tests and a QML interaction test
 The engine and library contain no Qt or audio-device code. The GUI passes elapsed
 time into the demo engine and displays snapshots; it does not own deck state.
 A real xwax integration must report the engine's confirmed state instead of
-assuming a sent load command succeeded. There is deliberately no speculative
-plugin framework or production audio adapter yet.
+assuming a sent load command succeeded. The source-aware track values retain export IDs and media-relative paths for
+future remote retrieval; there is no production audio adapter yet.
 
-For a future USB reader, keep mounting/hotplug separate from parsing. Traditional
+The USB reader keeps mounting/hotplug separate from parsing. Traditional
 Rekordbox exports use `PIONEER/rekordbox/export.pdb`, while OneLibrary exports use
 `exportLibrary.db`; a generic SQLite fixture does not prove USB compatibility.
 See [the export format analysis](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html).

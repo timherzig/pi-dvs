@@ -13,6 +13,26 @@ class Track:
     duration: float
     artwork: Path | None = None
     available: bool = True
+    audio_path: Path | None = None
+    source_id: str = "demo"
+    export_id: str = ""
+    relative_path: str = ""
+    media_root: Path | None = None
+    album: str = ""
+    genre: str = ""
+    key: str = ""
+    bpm: float = 0.0
+    unavailable_reason: str = ""
+
+
+@dataclass(frozen=True)
+class Playlist:
+    id: str
+    name: str
+    parent_id: str = ""
+    is_folder: bool = False
+    order: int = 0
+    track_ids: tuple[str, ...] = ()
 
 
 class Status(StrEnum):
