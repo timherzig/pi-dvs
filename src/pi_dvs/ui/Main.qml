@@ -61,6 +61,8 @@ ApplicationWindow {
             }
         }
         VinylSimulator {
+            objectName: "vinylSimulator"
+            visible: window.controller.isSimulation
             Layout.fillWidth: true
             controller: window.controller
         }
@@ -80,13 +82,13 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Text {
-                text: "Silent demo · playback is simulated"
+                text: window.controller.isSimulation ? "Silent demo · playback is simulated" : "xwax · engine-reported state"
                 color: "#8998a3"
                 font.pixelSize: 12
             }
             Item { Layout.fillWidth: true }
             Text {
-                text: "Stop the record or lift the needle to change tracks"
+                text: window.controller.isSimulation ? "Stop the record or lift the needle to change tracks" : "Stop the record to change tracks"
                 color: "#687985"
                 font.pixelSize: 11
             }

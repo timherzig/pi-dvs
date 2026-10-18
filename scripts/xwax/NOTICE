@@ -1,0 +1,9 @@
+Selected engine: upstream xwax 1.10, https://xwax.org/releases/xwax-1.10.tar.gz
+Source SHA256: 589144364d0fea2cc7cbbc21ded25fd376c4c71819a126b8f5864e76eaebcdf3
+Upstream xwax: Copyright (C) 2026 Mark Hills
+pi-dvs patch and remote extension: Copyright (C) 2026 Tim Herzig
+
+The engine, patch and native extension are licensed under GNU GPL version 3.
+See COPYING. No engine source or binary is included in the pi-dvs Python wheel.
+The extension adds headless control and confirmed state to upstream xwax.
+Timecode decoding, native resampling and audio buffering remain upstream's.

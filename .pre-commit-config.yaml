@@ -9,6 +9,7 @@ repos:
       - id: detect-private-key
       - id: check-added-large-files
       - id: trailing-whitespace
+        exclude: \.patch$ # Unified-diff context lines must retain their leading space.
       - id: end-of-file-fixer
   - repo: local
     hooks:

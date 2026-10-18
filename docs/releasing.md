@@ -7,7 +7,9 @@ version tags from `main`, not a separately maintained production branch.
 ## Continuous integration
 
 `.github/workflows/checks.yml` tests Python 3.12 and 3.13 on macOS and Ubuntu.
-Every combination checks repository hygiene, formatting, lint, strict types,
+A separate required Linux job builds the pinned, patched xwax binary and runs
+`make xwax-smoke` with dummy decks; it does not establish hardware compatibility.
+Every Python/platform combination checks repository hygiene, formatting, lint, strict types,
 behavior tests, branch coverage, lock consistency, and installation of the built
 wheel with its resources. Linux installs Qt's EGL/OpenGL libraries for headless
 tests. One stable `Quality gate` check reports the whole matrix for branch rules.
@@ -62,8 +64,9 @@ uv pip install --python .venv/bin/python --no-deps ./*.whl
 
 Keep the previous release folder until the new version is verified. To roll back,
 close the application and run the previous folder's `.venv/bin/pi-dvs`. Do not
-update an installation in place during a set. The current artifact is the silent
-desktop demo, not a production audio appliance. Automatic Raspberry Pi deployment,
+update an installation in place during a set. The Python artifact defaults to
+silent simulation and can connect to a separately built xwax engine; it does not
+establish production audio-appliance readiness. Automatic Raspberry Pi deployment,
 health checks, and service rollback will be added with the hardware/boot milestone.
 
 ## GitHub repository policy

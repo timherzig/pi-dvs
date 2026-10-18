@@ -1,4 +1,4 @@
-.PHONY: setup lint typecheck test check format package
+.PHONY: setup lint typecheck test check format package xwax-smoke
 
 setup:
 	uv sync --locked --all-groups
@@ -25,3 +25,7 @@ package:
 	uv build --clear --no-build-isolation
 	uv export --locked --no-default-groups --no-emit-project --output-file dist/requirements.txt
 	uv run --locked python scripts/check_package.py
+
+xwax-smoke:
+	docker build -t pi-dvs-xwax-smoke scripts/xwax
+	docker run --rm --network none -v "$(CURDIR):/app:ro" pi-dvs-xwax-smoke

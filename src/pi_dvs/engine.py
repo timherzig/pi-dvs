@@ -6,6 +6,7 @@ A real engine must report confirmed transport, position, and load state.
 
 import math
 from dataclasses import replace
+from typing import Protocol
 
 from pi_dvs.model import DeckState, Status, Track
 
@@ -24,7 +25,23 @@ def _follow_vinyl(state: DeckState) -> DeckState:
     return replace(state, status=status)
 
 
+class Engine(Protocol):
+    simulation: bool
+
+    @property
+    def decks(self) -> tuple[DeckState, ...]: ...
+    def load(self, deck: int, track: Track, *, generation: int | None = None) -> None: ...
+    def unload(self, deck: int) -> None: ...
+    def advance(self, seconds: float) -> bool: ...
+    def close(self) -> None: ...
+
+
 class DemoEngine:
+    simulation = True
+
+    def close(self) -> None:
+        pass
+
     LOAD_SECONDS = 0.35
 
     def __init__(self) -> None:
@@ -40,7 +57,7 @@ class DemoEngine:
             raise ValueError("Deck must be 0 (A) or 1 (B)")
         return self._decks[deck]
 
-    def load(self, deck: int, track: Track) -> None:
+    def load(self, deck: int, track: Track, *, generation: int | None = None) -> None:
         state = self._deck(deck)
         if not state.can_change_track:
             raise ValueError("Stop the record or lift the needle before changing tracks")
