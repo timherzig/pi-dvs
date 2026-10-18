@@ -9,6 +9,9 @@ version tags from `main`, not a separately maintained production branch.
 `.github/workflows/checks.yml` tests Python 3.12 and 3.13 on macOS and Ubuntu.
 A separate required Linux job builds the pinned, patched xwax binary and runs
 `make xwax-smoke` with dummy decks; it does not establish hardware compatibility.
+A separate Linux job runs `make link-test` against loopback CDJ clients using the
+pinned Rust helper and dependency patch. The Python wheel excludes that GPL
+executable; helper distribution needs the corresponding source and notices.
 Every Python/platform combination checks repository hygiene, formatting, lint, strict types,
 behavior tests, branch coverage, lock consistency, and installation of the built
 wheel with its resources. Linux installs Qt's EGL/OpenGL libraries for headless

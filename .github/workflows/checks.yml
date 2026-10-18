@@ -72,10 +72,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make xwax-smoke
 
+  link-test:
+    name: Pro DJ Link helper (loopback)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make link-test
+
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [verify, xwax-smoke]
+    needs: [verify, xwax-smoke, link-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -83,4 +91,5 @@ jobs:
         env:
           RESULT: ${{ needs.verify.result }}
           ENGINE_RESULT: ${{ needs.xwax-smoke.result }}
-        run: test "$RESULT" = success && test "$ENGINE_RESULT" = success
+          LINK_RESULT: ${{ needs.link-test.result }}
+        run: test "$RESULT" = success && test "$ENGINE_RESULT" = success && test "$LINK_RESULT" = success

@@ -12,6 +12,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 
 from pi_dvs.engine import DemoEngine
 from pi_dvs.library import Library, demo_library
+from pi_dvs.link.service import LinkService
 from pi_dvs.presentation import Controller
 from pi_dvs.xwax import XwaxEngine
 
@@ -20,13 +21,14 @@ def create_window(
     library_root: Path | None = None,
     format_choice: str = "auto",
     sockets: tuple[Path, Path] | None = None,
+    link: LinkService | None = None,
 ) -> tuple[QQmlApplicationEngine, Controller]:
     library = (
         Library((), name="Open a Rekordbox USB", source_id="xwax", format_name="No library")
         if sockets
         else demo_library()
     )
-    controller = Controller(library, XwaxEngine(sockets) if sockets else DemoEngine())
+    controller = Controller(library, XwaxEngine(sockets) if sockets else DemoEngine(), link=link)
     engine = QQmlApplicationEngine()
     engine.setInitialProperties({"controller": controller})
     engine.load(QUrl.fromLocalFile(str(files("pi_dvs").joinpath("ui", "Main.qml"))))
@@ -52,7 +54,24 @@ def main() -> int:
         metavar=("DECK_A", "DECK_B"),
         help="Connect to two local patched xwax sockets instead of simulation",
     )
+    parser.add_argument(
+        "--link-interface", help="Enable Pro DJ Link on this wired interface (e.g. en7 or eth0)"
+    )
+    parser.add_argument(
+        "--link-helper", type=Path, help="Path to the separately built pi-dvs-link helper"
+    )
+    parser.add_argument("--link-cache", type=Path, help="Host-local Link cache directory")
+    parser.add_argument(
+        "--link-cache-mib",
+        type=int,
+        default=2048,
+        help="Audio cache capacity in MiB (default: 2048)",
+    )
     args = parser.parse_args()
+    if bool(args.link_interface) != bool(args.link_helper):
+        parser.error("Use --link-interface and --link-helper together")
+    if args.link_cache_mib < 1:
+        parser.error("--link-cache-mib must be positive")
     if args.demo and args.xwax_sockets:
         parser.error("--demo cannot be combined with --xwax-sockets")
     sockets = (args.xwax_sockets[0], args.xwax_sockets[1]) if args.xwax_sockets else None
@@ -62,7 +81,22 @@ def main() -> int:
     app.setApplicationName("pi-dvs")
     app.setOrganizationName("pi-dvs")
     QQuickStyle.setStyle("Basic")
-    engine, controller = create_window(args.library, args.format, sockets)
+    from PySide6.QtCore import QStandardPaths
+
+    link = None
+    if args.link_interface:
+        cache = (
+            args.link_cache
+            or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation))
+            / "link"
+        )
+        link = LinkService(
+            args.link_interface,
+            args.link_helper.expanduser().absolute(),
+            cache.expanduser().absolute(),
+            cache_bytes=args.link_cache_mib * 1024**2,
+        )
+    engine, controller = create_window(args.library, args.format, sockets, link)
     app.aboutToQuit.connect(controller.close)
     if not engine.rootObjects():
         controller.close()

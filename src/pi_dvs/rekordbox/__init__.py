@@ -147,6 +147,11 @@ def _catalog(
                 genre=record.genre,
                 key=record.key,
                 bpm=record.bpm,
+                analysis_path=record.analysis_path,
+                artwork_path=record.artwork,
+                sample_rate=record.sample_rate,
+                bitrate=record.bitrate,
+                bit_depth=record.bit_depth,
                 unavailable_reason=reason,
             )
         )

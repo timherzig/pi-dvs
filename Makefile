@@ -1,4 +1,4 @@
-.PHONY: setup lint typecheck test check format package xwax-smoke
+.PHONY: setup lint typecheck test check format package xwax-smoke link-build link-test
 
 setup:
 	uv sync --locked --all-groups
@@ -29,3 +29,12 @@ package:
 xwax-smoke:
 	docker build -t pi-dvs-xwax-smoke scripts/xwax
 	docker run --rm --network none -v "$(CURDIR):/app:ro" pi-dvs-xwax-smoke
+
+link-build:
+	scripts/link/build.sh
+
+link-test:
+	scripts/link/build.sh --prepare
+	cd scripts/link && cargo fmt --check
+	cd scripts/link && RB_LITE_TEST=1 cargo test --locked
+	RB_LITE_TEST=1 cargo test --locked --manifest-path scripts/link/build/rbxport/Cargo.toml -p rbl-nfs --lib

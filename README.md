@@ -86,6 +86,13 @@ The application reads source media only. Artwork is cached on the computer;
 missing or undecodable covers use the existing fallback. See
 [USB formats, limitations, and verification](docs/rekordbox.md) for details.
 
+## Connect both directions over Pro DJ Link
+
+An optional adapter retrieves tracks from a CDJ-hosted USB into a paced, protected
+local cache and shares a selected local USB with both CDJs. Its source picker,
+disconnect cancellation, fresh-media identities and helper recovery are integrated
+with the existing library and deck controls. See [Link build, setup and testing](docs/link.md).
+
 ## Connect to xwax on Linux
 
 Build and start the pinned engine, then select its two local deck sockets:
@@ -124,6 +131,7 @@ src/pi_dvs/
   model.py            immutable track and deck values
   library.py          catalog, metadata search and playlist/category browsing
   rekordbox/          read-only DeviceSQL and encrypted OneLibrary adapters
+  link/               paced retrieval, cache and supervised serving helper
   jobs.py             cancellable background media I/O
   engine.py           deterministic, silent two-deck simulation
   presentation.py     Qt models, actions and timer
@@ -136,7 +144,7 @@ The engine and library contain no Qt or audio-device code. The GUI passes elapse
 time into the demo engine and displays snapshots; it does not own deck state.
 A real xwax integration must report the engine's confirmed state instead of
 assuming a sent load command succeeded. The source-aware track values retain export IDs and media-relative paths for
-future remote retrieval. The optional `xwax/` adapter serializes commands and status
+remote retrieval. The optional `xwax/` adapter serializes commands and status
 polling on background workers; Python stays outside the real-time audio path.
 
 The USB reader keeps mounting/hotplug separate from parsing. Traditional
@@ -166,4 +174,5 @@ The Python wheel contains no xwax binary; PX5 configuration still needs validati
 
 Application code and demo fixtures: Apache-2.0, see [LICENSE](LICENSE).
 The xwax engine patch is GPL-3.0; see [its notice](scripts/xwax/NOTICE).
+The separate Pro DJ Link helper is GPL-2.0-or-later; see [its notice](scripts/link/NOTICE).
 Qt/PySide is a separate dependency under its own license terms.

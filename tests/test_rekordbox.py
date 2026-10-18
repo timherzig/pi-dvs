@@ -181,6 +181,31 @@ def test_load_rechecks_removed_or_emptied_audio(usb, tmp_path):
         prepare_audio(Track("demo", "Title", "Artist", 1))
 
 
+@pytest.mark.parametrize("slots", [1, 4, 15, 16, 17, 100])
+def test_pdb_partial_row_group_preserves_heap_space(slots):
+    data = bytearray(pdb_bytes())
+    start, size = 2 * 4096, 4096  # The synthetic genre table.
+    data[start + 40 : start + size] = bytes(size - 40)
+    data[start + 24 : start + 27] = (slots | (1 << 13)).to_bytes(3, "little")
+    # Only one row is live, in the final allocated slot. A partial group's
+    # unused pointers do not occupy space in the actual exported directory.
+    data[start + 27] = 0x34
+    last = slots - 1
+    group_end = start + size - (last // 16) * 36
+    pointer = group_end - 6 - (last % 16) * 2
+    row = struct.pack("<I", 1) + b"\x0dHouse"
+    location = pointer - len(row)
+    data[location:pointer] = row
+    struct.pack_into("<H", data, pointer, location - start - 40)
+    struct.pack_into("<H", data, group_end - 4, 1 << (last % 16))
+    export = read_pdb(bytes(data))
+    assert export.tracks[0].genre == "House"
+    # Starting a record at the directory itself must still be rejected.
+    struct.pack_into("<H", data, pointer, pointer - start - 40)
+    with pytest.raises(ImportFailure, match="outside its data heap"):
+        read_pdb(bytes(data))
+
+
 def test_pdb_deleted_rows_and_more_than_255_playlist_slots():
     assert len(read_pdb(pdb_bytes(deleted=True)).tracks) == 2
     export = read_pdb(pdb_bytes(entries=[1] * 260))

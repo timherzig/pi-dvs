@@ -1,0 +1,881 @@
+diff --git a/crates/rbl-dbserver/src/session.rs b/crates/rbl-dbserver/src/session.rs
+index b9746ec..be41e9b 100644
+--- a/crates/rbl-dbserver/src/session.rs
++++ b/crates/rbl-dbserver/src/session.rs
+@@ -1147,9 +1147,19 @@ impl LinkSession {
+                 let album = Self::number(message, 2);
+                 self.tracks(message, TrackScope::Album(album))
+             }
+-            // RX3 uses `0x1200` for the same all-track list while changing
+-            // its load/search depth (`djdsqlGetTrack_Content`).
+-            kind::TRACK_MENU | kind::CONTENT_TRACKS => self.tracks(message, TrackScope::All),
++            kind::TRACK_MENU => self.tracks(message, TrackScope::All),
++            kind::CONTENT_TRACKS => {
++                // CDJ-900 search selection includes the requested track ID.
++                // The RX3 two-argument form requests the full sorted library.
++                let sort = Sort::from_id(Self::number(message, 1));
++                let query = Query::Tracks { scope: TrackScope::All, sort };
++                let mut rows = self.catalog.list(&query);
++                if let Some(Argument::Number(selected)) = message.arguments.get(2) {
++                    rows.retain(|row| matches!(row, Row::Track { id, .. } if id == selected));
++                }
++                self.catalog.filter_rows(&mut rows, &self.filter);
++                self.menu(message, Menu::Library { query, rows })
++            }
+             kind::FILE_NAME_MENU => self.tracks(message, TrackScope::FileName),
+             kind::MATCHING_TRACKS => {
+                 self.tracks(message, TrackScope::Matching(Self::number(message, 2)))
+@@ -1972,7 +1982,8 @@ fn track_info_rows(t: &TrackDetails) -> Vec<Item> {
+         // field, so the row is blank but shaped the same.
+         Item {
+             a: 1,
+-            id: 1,
++            // This field selects the audio decoder when a track is loaded.
++            id: t.file_type,
+             item_type: item_type::TRACK,
+             e: 0x100,
+             key: t.row.key,
+diff --git a/crates/rbl-index/src/input.rs b/crates/rbl-index/src/input.rs
+new file mode 100644
+index 0000000..cef9d21
+--- /dev/null
++++ b/crates/rbl-index/src/input.rs
+@@ -0,0 +1,134 @@
++//! Borrowed records for indexing an already-read export without opening a database.
++
++use crate::{strings::fold, Cue, Cues, Library, Playlists};
++use std::collections::HashMap;
++
++/// Minimal track description for constructing an index without a database.
++#[derive(Debug, Clone, Default)]
++pub struct TrackInput<'a> {
++    pub id: u64,
++    pub title: &'a str,
++    pub artist: &'a str,
++    pub album: &'a str,
++    pub album_artist: &'a str,
++    pub original_artist: &'a str,
++    pub composer: &'a str,
++    pub remixer: &'a str,
++    pub mix_name: &'a str,
++    pub label: &'a str,
++    pub comment: &'a str,
++    pub bpm_x100: u32,
++    pub length_sec: u32,
++    pub rating: u8,
++    pub date_added: &'a str,
++    pub key: &'a str,
++    /// `ColorID`, 1 to 8; 0 is none.
++    pub color: u8,
++    /// In any order; the index sorts them by position as the loader does.
++    pub cues: Vec<Cue>,
++    /// The file's absolute path, as `djmdContent.FolderPath` holds it.
++    pub path: &'a str,
++    pub genre: &'a str,
++    pub year: u16,
++    pub play_count: u16,
++    pub file_size: u64,
++    pub sample_rate: u32,
++    pub bitrate: u32,
++    /// The tag's track number, `djmdContent.TrackNo`.
++    pub track_number: u32,
++    pub disc_no: u16,
++    /// rekordbox's file type code.
++    pub file_type: u8,
++    pub bit_depth: u16,
++    pub lyricist: &'a str,
++    pub date_created: &'a str,
++    /// The Publish track information box.
++    pub publish: bool,
++    /// `djmdContent.DeliveryComment`.
++    pub message: &'a str,
++}
++
++/// Builds an index directly, bypassing SQL.
++pub fn library_from(tracks: &[TrackInput<'_>]) -> Library {
++    let mut lib = Library::default();
++    let mut artists = HashMap::new();
++    let mut albums = HashMap::new();
++    let mut genres = HashMap::new();
++    let mut labels = HashMap::new();
++    for t in tracks {
++        lib.ids.push(t.id);
++        lib.title.push(t.title);
++        lib.title_folded.push(&fold(t.title));
++        lib.comment.push(t.comment);
++        for (column, value) in lib.search_extra.iter_mut().zip([
++            t.composer,
++            t.album_artist,
++            t.remixer,
++            t.original_artist,
++            t.mix_name,
++        ]) {
++            column.push(value);
++        }
++        lib.folder_path.push(t.path);
++        lib.file_name.push(
++            std::path::Path::new(t.path)
++                .file_name()
++                .and_then(|n| n.to_str())
++                .unwrap_or(""),
++        );
++        lib.analysis_path.push("");
++        lib.date_added.push(t.date_added);
++        lib.release_date.push("");
++        lib.date_created.push(t.date_created);
++        lib.lyricist.push(t.lyricist);
++        lib.message.push(t.message);
++        let artist = *artists.entry(t.artist).or_insert_with(|| {
++            let id = lib.artists.push(t.artist);
++            lib.artist_ids.push(id + 1);
++            id
++        });
++        let album = *albums.entry(t.album).or_insert_with(|| {
++            let id = lib.albums.push(t.album);
++            lib.album_ids.push(id + 1);
++            id
++        });
++        let genre = *genres.entry(t.genre).or_insert_with(|| {
++            let id = lib.genres.push(t.genre);
++            lib.genre_ids.push(id + 1);
++            id
++        });
++        let label = *labels.entry(t.label).or_insert_with(|| {
++            let id = lib.labels.push(t.label);
++            lib.label_ids.push(id + 1);
++            id
++        });
++        lib.artist.push(artist);
++        lib.album.push(album);
++        lib.genre.push(genre);
++        lib.label.push(label);
++        // One interner entry per track, names repeating, which is what
++        // `djmdKey` does on the reference library (`A` under two ids).
++        lib.key.push(lib.keys.push(t.key));
++        lib.bpm_x100.push(t.bpm_x100);
++        lib.length_sec.push(t.length_sec);
++        lib.rating.push(t.rating);
++        lib.color.push(t.color);
++        lib.play_count.push(t.play_count);
++        lib.analysed.push(u8::from(t.bpm_x100 > 0));
++        lib.year.push(t.year);
++        lib.bitrate.push(t.bitrate);
++        lib.sample_rate.push(t.sample_rate);
++        lib.file_size.push(t.file_size);
++        lib.track_number.push(t.track_number);
++        lib.disc_no.push(t.disc_no);
++        lib.file_type.push(t.file_type);
++        lib.bit_depth.push(t.bit_depth);
++        lib.publish.push(u8::from(t.publish));
++    }
++    lib.count = tracks.len();
++    lib.set_cues(Cues::from_per_track(tracks.iter().map(|t| t.cues.clone()).collect()));
++    lib.set_playlists(Playlists::default());
++    lib.build_ranks();
++    lib.build_search();
++    lib
++}
+diff --git a/crates/rbl-index/src/lib.rs b/crates/rbl-index/src/lib.rs
+index 241e16d..b54496d 100644
+--- a/crates/rbl-index/src/lib.rs
++++ b/crates/rbl-index/src/lib.rs
+@@ -24,6 +24,7 @@ mod related;
+ pub mod smart;
+ pub mod strings;
+ pub mod testing;
++pub mod input;
+ mod view;
+ pub mod xml_export;
+ 
+diff --git a/crates/rbl-index/src/strings.rs b/crates/rbl-index/src/strings.rs
+index cf236cf..0a73147 100644
+--- a/crates/rbl-index/src/strings.rs
++++ b/crates/rbl-index/src/strings.rs
+@@ -128,8 +128,13 @@ pub fn fold(s: &str) -> String {
+             'a'..='z' | '0'..='9' | ' ' => out.push(ch),
+             'A'..='Z' => out.push(ch.to_ascii_lowercase()),
+             _ => {
+-                for folded in deaccent(ch) {
+-                    out.push(*folded);
++                let folded = deaccent(ch);
++                if folded.is_empty() && ch.is_alphanumeric() {
++                    // Preserve other scripts instead of turning their names
++                    // into empty sort/search keys. Display text is unchanged.
++                    out.extend(ch.to_lowercase());
++                } else {
++                    out.extend(folded.iter().copied());
+                 }
+             }
+         }
+diff --git a/crates/rbl-link/src/beacon.rs b/crates/rbl-link/src/beacon.rs
+index 06db052..d3868cf 100644
+--- a/crates/rbl-link/src/beacon.rs
++++ b/crates/rbl-link/src/beacon.rs
+@@ -147,6 +147,11 @@ pub struct Player {
+     /// Tempo × 100 as the player reports it — its track's, at its pitch.
+     pub bpm_x100: u32,
+     pub last_seen: Instant,
++    /// Local USB status, never inferred from the currently loaded track.
++    pub usb_present: Option<bool>,
++    pub usb_generation: u64,
++    pub usb_seen: Option<Instant>,
++    pub mac: [u8; 6],
+ }
+ 
+ /// Everything the threads learn, for the app to read.
+@@ -229,9 +234,11 @@ impl Shared {
+             cued: false,
+             bpm_x100: 0,
+             last_seen: Instant::now(),
++            usb_present: None, usb_generation: 0, usb_seen: None, mac: [0; 6],
+         });
+         if let Some(player) = self.players.get_mut(&keep_alive.device_number) {
+             player.last_seen = Instant::now();
++            player.mac = keep_alive.mac;
+             player.name.clone_from(&keep_alive.name);
+             // Only the established matching payload/sender case is changed.
+             // A disagreement still needs vendor evidence before a policy.
+@@ -1224,6 +1231,7 @@ fn hear_player_status(
+             cued: false,
+             bpm_x100: 0,
+             last_seen: Instant::now(),
++            usb_present: None, usb_generation: 0, usb_seen: None, mac: [0; 6],
+         }
+     });
+     let loaded = from_us.then_some(state.track_id);
+@@ -1251,6 +1259,14 @@ fn hear_player_status(
+             "player master state changed"
+         );
+     }
++    if let Some(value) = packet.get(0x6f) {
++        let present = *value == 0;
++        if player.usb_present != Some(present) {
++            player.usb_generation = player.usb_generation.wrapping_add(1);
++        }
++        player.usb_present = Some(present);
++        player.usb_seen = Some(Instant::now());
++    }
+     player.kind = kind;
+     player.loaded = loaded;
+     player.playing = playing;
+@@ -1453,6 +1469,7 @@ mod all_in_one_tests {
+             cued: false,
+             bpm_x100: 0,
+             last_seen: Instant::now(),
++            usb_present: None, usb_generation: 0, usb_seen: None, mac: [0; 6],
+         }
+     }
+ 
+diff --git a/crates/rbl-link/src/catalog.rs b/crates/rbl-link/src/catalog.rs
+index ecca241..4e550a1 100644
+--- a/crates/rbl-link/src/catalog.rs
++++ b/crates/rbl-link/src/catalog.rs
+@@ -46,6 +46,17 @@ pub enum KeyOrder {
+ /// library reloaded behind a running link session is what the next request
+ /// sees, and so `rbl-link` needs nothing from the webview.
+ pub trait Source: Send + Sync {
++    /// Asset reads can be restricted to a removable-media generation.
++    fn read_asset(&self, path: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
++        let root = self.share_root().canonicalize().ok()?;
++        let path = path.canonicalize().ok()?;
++        if !path.starts_with(root) { return None; }
++        bounded_asset(&path, limit)
++    }
++    /// Override the desktop folder export with an application's exact file list.
++    fn file_exports(&self, library: &Library) -> rbl_nfs::Exports {
++        crate::files::exports(library)
++    }
+     /// The library as it is now.
+     fn library(&self) -> Option<Arc<Library>>;
+     fn key_notation(&self) -> KeyNotation {
+@@ -360,7 +371,7 @@ impl IndexCatalog {
+         if relative.is_empty() {
+             return None;
+         }
+-        let bytes: Arc<[u8]> = read_artwork(&self.source.share_root(), relative, size)?.into();
++        let bytes: Arc<[u8]> = read_artwork_with(&self.source.share_root(), relative, size, &|path, limit| self.source.read_asset(path, limit))?.into();
+         let mut cache = self.browse.lock();
+         while cache.artwork_bytes + bytes.len() > ARTWORK_CACHE_BYTES && !cache.artwork.is_empty() {
+             let evicted = cache.artwork.remove(0);
+@@ -1020,8 +1031,7 @@ impl IndexCatalog {
+         }
+         let dat_path = rbl_anlz::resolve(&self.source.share_root(), relative);
+         let read = |path: &std::path::Path| {
+-            std::fs::read(path)
+-                .ok()
++            self.source.read_asset(path, 32 * 1024 * 1024)
+                 .and_then(|bytes| rbl_anlz::parse(&bytes).ok())
+         };
+         let parsed = Arc::new(Parsed {
+@@ -1333,7 +1343,10 @@ impl Catalog for IndexCatalog {
+             genre: library.genre_name(row).to_owned(),
+             date_added: library.date_added.get(at).to_owned(),
+             year: details.as_ref().map_or(0, |d| d.year),
+-            bit_rate_kbps: details.as_ref().map_or(0, |d| d.bitrate),
++            bit_rate_kbps: details.as_ref().map_or_else(
++                || library.bitrate.get(at).copied().unwrap_or(0),
++                |d| d.bitrate,
++            ),
+             label_id: lookup_id(&library.label, &library.label_ids),
+             label: library.label_name(row).to_owned(),
+             original_artist: details
+@@ -1346,7 +1359,7 @@ impl Catalog for IndexCatalog {
+                 .unwrap_or_default(),
+             path,
+             file_size: u32::try_from(file_size).unwrap_or(u32::MAX),
+-            file_type: details.as_ref().map_or(0, |d| d.file_type),
++            file_type: details.as_ref().map_or_else(|| u32::from(library.file_type.get(at).copied().unwrap_or(0)), |d| d.file_type),
+         })
+     }
+ 
+@@ -1555,14 +1568,27 @@ impl Catalog for IndexCatalog {
+ ///
+ /// The first file that exists is the one sent; one over [`MAX_ARTWORK`] is
+ /// not sent at all.
++fn bounded_asset(path: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
++    use std::io::Read;
++    let mut bytes = Vec::new();
++    std::fs::File::open(path).ok()?.take(limit + 1).read_to_end(&mut bytes).ok()?;
++    (bytes.len() as u64 <= limit).then_some(bytes)
++}
++
++#[cfg(test)]
+ fn read_artwork(share: &std::path::Path, relative: &str, size: ArtworkSize) -> Option<Vec<u8>> {
++    read_artwork_with(share, relative, size, &|path, limit| bounded_asset(path, limit))
++}
++
++fn read_artwork_with(share: &std::path::Path, relative: &str, size: ArtworkSize,
++    read: &dyn Fn(&std::path::Path, u64) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+     let existing = |candidate: &str| resolve_under(share, candidate).filter(|path| path.is_file());
+     let read_bounded = |path: PathBuf| {
+         let meta = std::fs::metadata(&path).ok()?;
+         if meta.len() > MAX_ARTWORK {
+             return None;
+         }
+-        std::fs::read(&path).ok()
++        read(&path, MAX_ARTWORK)
+     };
+     let (suffix, fallbacks): (&str, &[&str]) = match size {
+         ArtworkSize::Medium => (MEDIUM_ARTWORK_SUFFIX, &[SMALL_ARTWORK_SUFFIX]),
+@@ -1574,7 +1600,7 @@ fn read_artwork(share: &std::path::Path, relative: &str, size: ArtworkSize) -> O
+     if size == ArtworkSize::Medium {
+         let built = existing(relative)
+             .filter(|path| std::fs::metadata(path).is_ok_and(|meta| meta.len() <= MAX_ARTWORK_SOURCE))
+-            .and_then(|path| std::fs::read(path).ok())
++            .and_then(|path| read(&path, MAX_ARTWORK_SOURCE))
+             .and_then(|original| medium_artwork(&original));
+         if built.is_some() {
+             return built;
+diff --git a/crates/rbl-link/src/lib.rs b/crates/rbl-link/src/lib.rs
+index d730c40..339b225 100644
+--- a/crates/rbl-link/src/lib.rs
++++ b/crates/rbl-link/src/lib.rs
+@@ -248,7 +248,7 @@ impl LinkExport {
+                 beat_port: rbl_prolink::PORT_BEAT,
+                 computer_name: computer_name(),
+             },
+-            Arc::new(Facts { source }),
++            Arc::new(Facts { source: Arc::clone(&source) }),
+         )
+         .map_err(|e| LinkError::Bind(explain(&e, "UDP", ports.announce)))?;
+         let number = beacon.number_cell();
+@@ -276,7 +276,7 @@ impl LinkExport {
+         let export_host = (!interface.address.is_loopback())
+             .then(|| format!("{}/{}", interface.address, interface.netmask));
+         let files = match rbl_nfs::net::Bound::start(
+-            files::exports(&library),
++            source.file_exports(&library),
+             listen_on,
+             ports.portmap,
+             ports.mount,
+diff --git a/crates/rbl-link/src/watch.rs b/crates/rbl-link/src/watch.rs
+index df9eba4..938f32a 100644
+--- a/crates/rbl-link/src/watch.rs
++++ b/crates/rbl-link/src/watch.rs
+@@ -96,6 +96,7 @@ impl Watcher {
+                                 cued: false,
+                                 bpm_x100: 0,
+                                 last_seen: Instant::now(),
++                                usb_present: None, usb_generation: 0, usb_seen: None, mac: p.mac,
+                             })
+                             .collect();
+                         (*peers.lock()).clone_from(&list);
+diff --git a/crates/rbl-nfs/src/lib.rs b/crates/rbl-nfs/src/lib.rs
+index 7ceac93..c249bbb 100644
+--- a/crates/rbl-nfs/src/lib.rs
++++ b/crates/rbl-nfs/src/lib.rs
+@@ -16,6 +16,7 @@
+ //!   an answer it understands.
+ 
+ pub mod net;
++mod pacing;
+ pub mod rpc;
+ pub mod vfs;
+ pub mod xdr;
+@@ -194,10 +195,9 @@ pub struct Server {
+     /// list per export, filled by MNT and emptied by UMNT, and counts the
+     /// mounts to know when a player is ready to be sent a track.
+     mounts: Mutex<HashMap<String, Vec<Ipv4Addr>>>,
+-    /// The last replies, by who asked and the call's first 24 bytes (xid,
+-    /// message type, RPC version, program, version, procedure): a
+-    /// retransmitted call gets the same reply again rather than a second
+-    /// execution, as libFilSiNE's twenty-entry cache does.
++    /// Twenty replies keyed by peer/socket and the complete bounded request.
++    /// Reused XIDs with changed handles/offsets must not alias old audio.
++    /// Successful READ replays additionally recheck the current source.
+     replies: Mutex<std::collections::VecDeque<(ReplyKey, Vec<u8>)>>,
+ }
+ 
+@@ -207,7 +207,7 @@ struct ReplyKey {
+     receiver: Receiver,
+     from: Ipv4Addr,
+     port: u16,
+-    head: Vec<u8>,
++    request: Vec<u8>,
+ }
+ 
+ /// Identity of one receiving socket for the lifetime of its serving loop.
+@@ -224,8 +224,8 @@ impl Default for Receiver {
+ 
+ /// How many replies are kept for retransmits.
+ const REPLY_CACHE: usize = 20;
+-/// The bytes of a call that identify it in the cache.
+-const REPLY_KEY_LEN: usize = 24;
++/// Maximum UDP request retained in each bounded cache entry.
++const MAX_CACHED_REQUEST: usize = 65_535;
+ 
+ impl Server {
+     pub fn new(exports: Exports, nfs_port: u16, mount_port: u16) -> Self {
+@@ -309,14 +309,28 @@ impl Server {
+ 
+     /// Handles a datagram on the explicitly identified receiving socket.
+     pub fn handle_on(&self, datagram: &[u8], from: Ipv4Addr, port: u16, receiver: Receiver) -> Option<Vec<u8>> {
+-        let key = datagram
+-            .get(..REPLY_KEY_LEN)
+-            .map(|head| ReplyKey { receiver, from, port, head: head.to_vec() });
++        let key = (24..=MAX_CACHED_REQUEST).contains(&datagram.len()).then(||
++            ReplyKey { receiver, from, port, request: datagram.to_vec() });
+         if let Some(key) = &key {
+-            let replies = self.replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+-            if let Some((_, reply)) = replies.iter().find(|(k, _)| k == key) {
++            let cached = {
++                let replies = self.replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++                replies.iter().find(|(k, _)| k == key).map(|(_, reply)| reply.clone())
++            };
++            if let Some(reply) = cached {
++                // No cache lock is held across filesystem/source validation.
++                if reply.len() > 100 {
++                    if let Ok(call) = rpc::Call::decode(datagram) {
++                        if call.program == PROGRAM_NFS && call.version == VERSION_NFS
++                            && call.procedure == nfs_proc::READ {
++                            let current = Self::read_handle(&mut call.reader())
++                                .and_then(|handle| self.locate(&handle))
++                                .and_then(|(vfs, index)| vfs.source(index)).is_some();
++                            if !current { return Some(Self::status_only(call.xid, nfs_status::STALE)); }
++                        }
++                    }
++                }
+                 tracing::trace!(%from, port, "call seen before; its reply sent again");
+-                return Some(reply.clone());
++                return Some(reply);
+             }
+         }
+         let reply = self.answer(datagram, from)?;
+@@ -567,6 +581,21 @@ impl Server {
+             .find_map(|vfs| vfs.node_of(handle).map(|index| (vfs, index)))
+     }
+ 
++    /// Resolve a pacing hint in memory only. Dispatch still validates mounts,
++    /// source identity and permissions after waiting, including cached replies.
++    pub fn read_rate(&self, request: &[u8]) -> std::num::NonZeroU64 {
++        let rate = (|| {
++            let call = rpc::Call::decode(request).ok()?;
++            if call.program != PROGRAM_NFS || call.version != VERSION_NFS || call.procedure != nfs_proc::READ {
++                return None;
++            }
++            let handle = Self::read_handle(&mut call.reader())?;
++            let (vfs, index) = self.locate(&handle)?;
++            Some(vfs.read_rate(index))
++        })();
++        rate.unwrap_or(crate::pacing::DEFAULT_READ_RATE)
++    }
++
+     fn read_handle(reader: &mut Reader<'_>) -> Option<Handle> {
+         Handle::from_slice(reader.opaque_fixed(HANDLE_LEN).ok()?)
+     }
+diff --git a/crates/rbl-nfs/src/net.rs b/crates/rbl-nfs/src/net.rs
+index e407d01..85650ee 100644
+--- a/crates/rbl-nfs/src/net.rs
++++ b/crates/rbl-nfs/src/net.rs
+@@ -37,6 +37,7 @@ pub fn serve(server: &Arc<Server>, socket: &UdpSocket, stop: &Arc<AtomicBool>) -
+     let socket_ref = socket2::SockRef::from(socket);
+     socket_ref.set_recv_buffer_size(SOCKET_BUFFER)?;
+     socket_ref.set_send_buffer_size(SOCKET_BUFFER)?;
++    let mut pacer = server.exports().paced_reads().then(crate::pacing::ReadPacer::default);
+     let mut buffer = vec![0_u8; DATAGRAM];
+     while !stop.load(Ordering::Relaxed) {
+         let (len, from) = match socket.recv_from(&mut buffer) {
+@@ -55,17 +56,41 @@ pub fn serve(server: &Arc<Server>, socket: &UdpSocket, stop: &Arc<AtomicBool>) -
+             SocketAddr::V4(v4) => *v4.ip(),
+             SocketAddr::V6(v6) => v6.ip().to_ipv4_mapped().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+         };
+-        let Some(reply) = server.handle_on(buffer.get(..len).unwrap_or(&[]), peer, from.port(), socket_id) else {
++        let request = &buffer[..len];
++        let is_read = crate::rpc::Call::decode(request).is_ok_and(|call|
++            call.program == crate::PROGRAM_NFS && call.version == crate::VERSION_NFS
++                && call.procedure == crate::nfs_proc::READ);
++        if is_read {
++            if let Some(pacer) = &pacer {
++                // Wait before handle_on: source validity is checked at dispatch,
++                // and no already-read audio is queued across USB removal.
++                if !wait_until(pacer.ready_at(peer, std::time::Instant::now()), stop) {
++                    break;
++                }
++            }
++        }
++        if stop.load(Ordering::Relaxed) { break; }
++        let Some(reply) = server.handle_on(request, peer, from.port(), socket_id) else {
+             continue;
+         };
++        if stop.load(Ordering::Relaxed) { break; }
+         let started = std::time::Instant::now();
+         match socket.send_to(&reply, from) {
+-            Ok(sent) => tracing::trace!(
+-                %from,
+-                sent,
+-                elapsed_us = started.elapsed().as_micros(),
+-                "RPC reply sent"
+-            ),
++            Ok(sent) => {
++                // Successful READ has a 100-byte header plus nonempty data.
++                // Error replies and metadata do not consume the read budget.
++                if is_read && reply.len() > 100 {
++                    if let Some(pacer) = &mut pacer {
++                        pacer.sent(peer, sent, server.read_rate(request), std::time::Instant::now());
++                    }
++                }
++                tracing::trace!(
++                    %from,
++                    sent,
++                    elapsed_us = started.elapsed().as_micros(),
++                    "RPC reply sent"
++                );
++            },
+             Err(error) => {
+                 tracing::warn!(%from, %error, len = reply.len(), "could not send an RPC reply");
+             }
+@@ -74,6 +99,19 @@ pub fn serve(server: &Arc<Server>, socket: &UdpSocket, stop: &Arc<AtomicBool>) -
+     Ok(())
+ }
+ 
++/// At the 256 KiB/s compatibility rate a maximum-size READ adds about 247 ms
++/// of head-of-line delay; typical CDJ-900 reads add about 36 ms.
++/// Mount and database serving use separate sockets/threads.
++fn wait_until(deadline: std::time::Instant, stop: &AtomicBool) -> bool {
++    while !stop.load(Ordering::Relaxed) {
++        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
++            return !stop.load(Ordering::Relaxed);
++        };
++        std::thread::sleep(left.min(Duration::from_millis(5)));
++    }
++    false
++}
++
+ fn is_timeout(error: &io::Error) -> bool {
+     matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+ }
+@@ -220,3 +258,20 @@ fn bind_rpc(address: IpAddr, port: u16) -> io::Result<UdpSocket> {
+     #[cfg(not(target_vendor = "apple"))]
+     UdpSocket::bind(SocketAddr::new(address, port))
+ }
++
++#[cfg(test)]
++mod pacing_tests {
++    use super::*;
++    #[test]
++    fn cancellation_during_pacing_prevents_dispatch() {
++        let stop = Arc::new(AtomicBool::new(false));
++        let cancelled = stop.clone();
++        let started = std::time::Instant::now();
++        let worker = std::thread::spawn(move || wait_until(started + Duration::from_secs(30), &cancelled));
++        std::thread::sleep(Duration::from_millis(10));
++        stop.store(true, Ordering::Relaxed);
++        assert!(!worker.join().unwrap());
++        assert!(started.elapsed() < Duration::from_millis(250));
++        assert!(!wait_until(started, &stop));
++    }
++}
+diff --git a/crates/rbl-nfs/src/pacing.rs b/crates/rbl-nfs/src/pacing.rs
+new file mode 100644
+index 0000000..b9f111c
+--- /dev/null
++++ b/crates/rbl-nfs/src/pacing.rs
+@@ -0,0 +1,137 @@
++//! Bounded per-player pacing; socket I/O and waiting stay in `net`.
++use std::collections::HashMap;
++use std::net::Ipv4Addr;
++use std::time::{Duration, Instant};
++
++/// Preserve the original budget for files without a format-aware hint.
++pub(crate) const DEFAULT_READ_RATE: std::num::NonZeroU64 =
++    std::num::NonZeroU64::new(512 * 1024).unwrap();
++const MAX_PEERS: usize = 16;
++
++#[derive(Default)]
++pub(crate) struct ReadPacer {
++    next: HashMap<Ipv4Addr, Instant>,
++    overflow: Option<Instant>,
++}
++impl ReadPacer {
++    pub(crate) fn ready_at(&self, peer: Ipv4Addr, now: Instant) -> Instant {
++        self.next
++            .get(&peer)
++            .copied()
++            .or(self.overflow)
++            .unwrap_or(now)
++            .max(now)
++    }
++
++    /// Called only after a successful send. Retransmitted replies cost bytes too.
++    pub(crate) fn sent(&mut self, peer: Ipv4Addr, bytes: usize, rate: std::num::NonZeroU64, completed: Instant) {
++        self.next.retain(|_, deadline| *deadline > completed);
++        let nanos = (bytes as u64 * 1_000_000_000).div_ceil(rate.get());
++        let next = completed + Duration::from_nanos(nanos);
++        if self.next.len() < MAX_PEERS || self.next.contains_key(&peer) {
++            self.next.insert(peer, next);
++        } else {
++            // Excess peers share a bounded fallback budget; none bypass pacing.
++            self.overflow = Some(next);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn peer(n: u8) -> Ipv4Addr {
++        Ipv4Addr::new(192, 0, 2, n)
++    }
++    #[test]
++    fn independent_players_get_full_budgets_without_idle_bursts() {
++        let mut pacer = ReadPacer::default();
++        let start = Instant::now();
++        let interval = Duration::from_nanos(18_135_071);
++        pacer.sent(peer(1), 9508, DEFAULT_READ_RATE, start);
++        assert_eq!(pacer.ready_at(peer(1), start), start + interval);
++        assert_eq!(pacer.ready_at(peer(2), start), start);
++        pacer.sent(peer(2), 9508, DEFAULT_READ_RATE, start);
++        assert_eq!(pacer.ready_at(peer(2), start), start + interval);
++        let idle = start + Duration::from_secs(60);
++        assert_eq!(pacer.ready_at(peer(1), idle), idle);
++        pacer.sent(peer(1), 9508, DEFAULT_READ_RATE, idle);
++        assert_eq!(pacer.ready_at(peer(1), idle), idle + interval);
++    }
++    #[test]
++    fn late_sends_and_cached_replies_use_actual_completion_time() {
++        let mut pacer = ReadPacer::default();
++        let start = Instant::now();
++        let completed = start + Duration::from_millis(100);
++        pacer.sent(peer(1), 524288, DEFAULT_READ_RATE, completed);
++        assert_eq!(
++            pacer.ready_at(peer(1), completed),
++            completed + Duration::from_secs(1)
++        );
++        let retry = completed + Duration::from_secs(1);
++        pacer.sent(peer(1), 524288, DEFAULT_READ_RATE, retry);
++        assert_eq!(
++            pacer.ready_at(peer(1), retry),
++            retry + Duration::from_secs(1)
++        );
++    }
++    #[test]
++    fn excess_peers_share_a_budget_and_expired_entries_are_reclaimed() {
++        let mut pacer = ReadPacer::default();
++        let start = Instant::now();
++        for n in 1..=16 {
++            pacer.sent(peer(n), 524288, DEFAULT_READ_RATE, start);
++        }
++        pacer.sent(peer(17), 524288, DEFAULT_READ_RATE, start);
++        assert_eq!(
++            pacer.ready_at(peer(18), start),
++            start + Duration::from_secs(1)
++        );
++        assert_eq!(pacer.next.len(), MAX_PEERS);
++        let later = start + Duration::from_secs(2);
++        pacer.sent(peer(18), 9508, DEFAULT_READ_RATE, later);
++        assert_eq!(pacer.next.len(), 1);
++        assert_eq!(pacer.ready_at(peer(19), later), later);
++    }
++    #[test]
++    fn freeing_a_tracked_slot_does_not_erase_an_overflow_budget() {
++        let mut pacer = ReadPacer::default();
++        let start = Instant::now();
++        for n in 1..=14 {
++            pacer.sent(peer(n), 524288, DEFAULT_READ_RATE, start);
++        }
++        for n in 15..=16 {
++            pacer.sent(peer(n), 1, DEFAULT_READ_RATE, start);
++        }
++        pacer.sent(peer(17), 65536, DEFAULT_READ_RATE, start);
++        let later = start + Duration::from_millis(20);
++        pacer.sent(peer(15), 1, DEFAULT_READ_RATE, later);
++        assert_eq!(pacer.next.len(), 15);
++        assert_eq!(
++            pacer.ready_at(peer(17), later),
++            start + Duration::from_millis(125)
++        );
++    }
++    #[test]
++    fn file_rate_changes_and_replays_preserve_each_players_existing_debt() {
++        let low = std::num::NonZeroU64::new(262_144).unwrap();
++        let high = std::num::NonZeroU64::new(403_200).unwrap();
++        let mut pacer = ReadPacer::default();
++        let start = Instant::now();
++        let low_gap = Duration::from_nanos(36_270_142);
++        let high_gap = Duration::from_nanos(23_581_350);
++        pacer.sent(peer(1), 9508, low, start);
++        pacer.sent(peer(2), 9508, high, start);
++        assert_eq!(pacer.ready_at(peer(1), start), start + low_gap);
++        assert_eq!(pacer.ready_at(peer(2), start), start + high_gap);
++        // Switching files cannot bypass the prior file's pending budget.
++        let switched = pacer.ready_at(peer(1), start);
++        pacer.sent(peer(1), 9508, high, switched);
++        assert_eq!(pacer.ready_at(peer(1), switched), switched + high_gap);
++        // A cached reply is charged in exactly the same way.
++        let replay = pacer.ready_at(peer(1), switched);
++        pacer.sent(peer(1), 9508, high, replay);
++        assert_eq!(pacer.ready_at(peer(1), replay), replay + high_gap);
++    }
++
++}
+diff --git a/crates/rbl-nfs/src/vfs.rs b/crates/rbl-nfs/src/vfs.rs
+index 978aed7..5c57572 100644
+--- a/crates/rbl-nfs/src/vfs.rs
++++ b/crates/rbl-nfs/src/vfs.rs
+@@ -72,6 +72,7 @@ struct Node {
+     /// Attributes of synthetic nodes. Host-backed nodes are stat'ed on
+     /// every request, as libFilSiNE obtains the current host attributes.
+     stat: Option<Stat>,
++    read_rate: Option<std::num::NonZeroU64>,
+ }
+ 
+ impl Node {
+@@ -85,6 +86,7 @@ impl Node {
+             source,
+             listed,
+             stat,
++            read_rate: None,
+         }
+     }
+ }
+@@ -224,6 +226,7 @@ pub struct Vfs {
+     /// of every export from one table, so a handle names its export by its
+     /// ids alone. Set when the export joins an [`Exports`].
+     id_base: u32,
++    guard: Option<std::sync::Arc<FileGuard>>,
+ }
+ 
+ impl Clone for Vfs {
+@@ -234,6 +237,7 @@ impl Clone for Vfs {
+             roots: self.roots.clone(),
+             tracks: self.tracks.clone(),
+             id_base: self.id_base,
++            guard: self.guard.clone(),
+         }
+     }
+ }
+@@ -310,12 +314,22 @@ fn entry_kind(meta: &std::fs::Metadata) -> Option<HostEntry> {
+     }
+ }
+ 
++pub struct FileGuard(pub Box<dyn Fn(&std::path::Path) -> bool + Send + Sync>);
++impl std::fmt::Debug for FileGuard {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("FileGuard") }
++}
++
+ impl Vfs {
++    /// Check removable-media identity before resolving or returning file bytes.
++    pub fn set_guard<F: Fn(&std::path::Path) -> bool + Send + Sync + 'static>(&mut self, guard: F) {
++        self.guard = Some(std::sync::Arc::new(FileGuard(Box::new(guard))));
++    }
+     /// Creates an empty export. `export` is the name a player mounts.
+     pub fn new(export: impl Into<String>) -> Self {
+         let export = export.into();
+         Self {
+             id_base: 0,
++            guard: None,
+             export,
+             nodes: RwLock::new(vec![Node::new("", NodeKind::Directory, 0, None, Some(Stat::directory(0)), false)]),
+             roots: Vec::new(),
+@@ -429,6 +443,19 @@ impl Vfs {
+         self.add(path, Some((source.into(), None)), Stat::directory(0))
+     }
+ 
++    /// Attach a nominal transfer budget to a registered file. Aliases retain
++    /// the higher budget; this hint never authorizes access or changes bytes.
++    pub fn set_read_rate(&mut self, index: usize, rate: std::num::NonZeroU64) {
++        if let Some(node) = self.write().get_mut(index).filter(|node| node.kind == NodeKind::File) {
++            node.read_rate = Some(node.read_rate.map_or(rate, |old| old.max(rate)));
++        }
++    }
++
++    pub(crate) fn read_rate(&self, index: usize) -> std::num::NonZeroU64 {
++        self.read().get(index).and_then(|node| node.read_rate)
++            .unwrap_or(crate::pacing::DEFAULT_READ_RATE)
++    }
++
+     /// Adds an empty directory, for a tree that must show a folder with no files.
+     pub fn add_dir(&mut self, path: &str) -> usize {
+         self.add(path, None, Stat::directory(0))
+@@ -656,10 +683,15 @@ impl Vfs {
+     /// The host path behind a node: a file's bytes, or the directory a
+     /// host-backed folder reads its names from.
+     pub fn source(&self, index: usize) -> Option<PathBuf> {
+-        self.read().get(index)?.source.clone()
++        let path = self.read().get(index)?.source.clone()?;
++        if self.guard.as_ref().is_some_and(|guard| !(guard.0)(&path)) { return None; }
++        Some(path)
+     }
+ 
+     pub fn attributes(&self, index: usize) -> Option<Attributes> {
++        if let Some(path) = self.read().get(index)?.source.as_ref() {
++            if self.guard.as_ref().is_some_and(|guard| !(guard.0)(path)) { return None; }
++        }
+         let nodes = self.read();
+         let node = nodes.get(index)?;
+         let stat = node.source.as_deref().map_or_else(
+@@ -721,6 +753,8 @@ impl Vfs {
+ #[derive(Debug, Default, Clone)]
+ pub struct Exports {
+     by_name: HashMap<String, Vfs>,
++    base: u32,
++    paced_reads: bool,
+ }
+ 
+ /// File ids per export: every export's nodes are numbered from one table,
+@@ -729,14 +763,24 @@ pub struct Exports {
+ const IDS_PER_EXPORT: u32 = 1 << 24;
+ 
+ impl Exports {
++    /// A new removable-media generation must not reuse previous root handles.
++    pub fn with_id_base(base: u32) -> Self { Self { base, ..Self::default() } }
+     pub fn new() -> Self {
+         Self::default()
+     }
+ 
++    /// Pace complete READ replies per player without shortening their data.
++    pub fn with_read_pacing(mut self) -> Self {
++        self.paced_reads = true;
++        self
++    }
++
++    pub(crate) fn paced_reads(&self) -> bool { self.paced_reads }
++
+     /// Adds an export, numbering its nodes in a range after every export
+     /// already in.
+     pub fn insert(&mut self, mut vfs: Vfs) {
+-        vfs.id_base = u32::try_from(self.by_name.len()).unwrap_or(u32::MAX).saturating_mul(IDS_PER_EXPORT);
++        vfs.id_base = self.base.saturating_add(u32::try_from(self.by_name.len()).unwrap_or(u32::MAX).saturating_mul(IDS_PER_EXPORT));
+         self.by_name.insert(vfs.export_name().to_owned(), vfs);
+     }
+ 
