@@ -36,6 +36,9 @@ class Playlist:
 
 
 class Status(StrEnum):
+    MISSING = "Engine missing"
+    DISCONNECTED = "Disconnected"
+    WAITING = "Waiting for engine"
     EMPTY = "Empty"
     LOADING = "Loading"
     READY = "Ready"
@@ -53,8 +56,13 @@ class DeckState:
     error: str = ""
     needle_down: bool = False
     platter_spinning: bool = False
+    change_allowed: bool | None = None
+    transport_message: str = ""
+    connection_generation: int = 0
 
     @property
     def can_change_track(self) -> bool:
         """The simulator locks track changes while the needle reads a moving record."""
+        if self.change_allowed is not None:
+            return self.change_allowed
         return not (self.needle_down and self.platter_spinning)

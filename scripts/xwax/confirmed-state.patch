@@ -1,0 +1,388 @@
+--- a/Makefile
++++ b/Makefile
+@@ -47,7 +47,7 @@
+ 
+ # Core objects and libraries
+ 
+-OBJS = controller.o \
++OBJS = remote.o controller.o \
+ 	cues.o \
+ 	deck.o \
+ 	device.o \
+--- a/alsa.c
++++ b/alsa.c
+@@ -412,7 +412,8 @@
+ 
+         if (r < 0) {
+             if (r == -EPIPE) {
+-                fputs("ALSA: capture xrun.\n", stderr);
++                atomic_fetch_add_explicit(&dv->capture_xruns, 1, memory_order_relaxed);
++                /* Report via control telemetry without realtime log I/O. */
+ 
+                 r = snd_pcm_prepare(alsa->capture.pcm);
+                 if (r < 0) {
+@@ -444,7 +445,8 @@
+ 
+         if (r < 0) {
+             if (r == -EPIPE) {
+-                fputs("ALSA: playback xrun.\n", stderr);
++                atomic_fetch_add_explicit(&dv->playback_xruns, 1, memory_order_relaxed);
++                /* Report via control telemetry without realtime log I/O. */
+ 
+                 r = snd_pcm_prepare(alsa->playback.pcm);
+                 if (r < 0) {
+--- a/device.c
++++ b/device.c
+@@ -29,6 +29,8 @@
+ {
+     debug("%p", dv);
+     dv->fault = false;
++    atomic_init(&dv->capture_xruns, 0);
++    atomic_init(&dv->playback_xruns, 0);
+     dv->ops = ops;
+ }
+ 
+--- a/device.h
++++ b/device.h
+@@ -22,11 +22,13 @@
+ 
+ #include <poll.h>
+ #include <stdbool.h>
++#include <stdatomic.h>
+ #include <sys/types.h>
+ 
+ #define DEVICE_CHANNELS 2
+ 
+ struct device {
++    atomic_uint capture_xruns, playback_xruns;
+     bool fault;
+     void *local;
+     struct device_ops *ops;
+--- a/player.c
++++ b/player.c
+@@ -109,6 +109,7 @@
+                         double start_vol, double end_vol)
+ {
+     int s;
++    unsigned length = __atomic_load_n(&tr->length, __ATOMIC_ACQUIRE);
+     double sample, step, vol, gradient;
+ 
+     sample = position * tr->rate;
+@@ -131,7 +132,7 @@
+         sa--;
+ 
+         for (q = 0; q < 4; q++, sa++) {
+-            if (sa < 0 || sa >= tr->length) {
++            if (sa < 0 || sa >= length) {
+                 for (c = 0; c < PLAYER_CHANNELS; c++)
+                     i[c][q] = 0;
+             } else {
+@@ -216,6 +217,7 @@
+     pl->pitch = 0.0;
+     pl->sync_pitch = 1.0;
+     pl->volume = 0.0;
++    remote_player_init(pl);
+ }
+ 
+ /*
+@@ -403,7 +405,7 @@
+         /* Jump the track to the time */
+ 
+         pl->position = pl->target_position;
+-        fprintf(stderr, "Seek to new position %.2lfs.\n", pl->position);
++        /* Position is reported through telemetry; no log I/O in this callback. */
+ 
+     } else if (fabs(pl->pitch) > SYNC_PITCH) {
+ 
+@@ -437,6 +439,7 @@
+ void player_collect(struct player *pl, signed short *pcm, unsigned samples)
+ {
+     double r, pitch, dt, target_volume;
++    bool position_known;
+ 
+     dt = pl->sample_dt * samples;
+ 
+@@ -444,6 +447,10 @@
+         if (sync_to_timecode(pl) == -1)
+             pl->timecode_control = false;
+     }
++
++    position_known = pl->timecode_control && pl->target_position != TARGET_UNKNOWN;
++    if (pl->remote.enabled)
++        remote_apply(pl);
+ 
+     if (pl->target_position != TARGET_UNKNOWN) {
+ 
+@@ -483,4 +490,6 @@
+ 
+     pl->position += r;
+     pl->volume = target_volume;
+-}
++    if (pl->remote.enabled)
++        remote_publish(pl, position_known);
++}
+--- a/player.h
++++ b/player.h
+@@ -23,6 +23,7 @@
+ #include <stdbool.h>
+ 
+ #include "spin.h"
++#include "remote.h"
+ #include "track.h"
+ 
+ #define PLAYER_CHANNELS 2
+@@ -31,6 +32,7 @@
+     double sample_dt;
+ 
+     spin lock;
++    struct remote_player remote;
+     struct track *track;
+ 
+     /* Current playback parameters */
+--- a/track.c
++++ b/track.c
+@@ -21,6 +21,7 @@
+ #include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <sys/mman.h> /* mlock() */
+@@ -189,7 +190,7 @@
+     /* Increment the track length. A memory barrier ensures the
+      * realtime or UI thread does not access garbage audio */
+ 
+-    __sync_fetch_and_add(&tr->length, samples);
++    __atomic_fetch_add(&tr->length, samples, __ATOMIC_RELEASE);
+ }
+ 
+ /*
+@@ -219,13 +220,21 @@
+ 
+     fprintf(stderr, "Importing '%s'...\n", path);
+ 
++    t->path = strdup(path);
++    if (!t->path)
++        return -1;
++
+     pid = fork_pipe_nb(&t->fd, importer, "import", path, STR(RATE), NULL);
+-    if (pid == -1)
++    if (pid == -1) {
++        free(t->path);
+         return -1;
++    }
+ 
+     t->pid = pid;
+     t->pe = NULL;
+     t->terminated = false;
++    t->import_result = 0;
++    t->read_failed = false;
+ 
+     t->refcount = 0;
+ 
+@@ -238,7 +247,6 @@
+     t->overview = 0;
+ 
+     t->importer = importer;
+-    t->path = path;
+ 
+     list_add(&t->tracks, &tracks);
+     rig_post_track(t);
+@@ -266,6 +274,7 @@
+         free(tr->block[n]);
+ 
+     list_del(&tr->tracks);
++    free(tr->path);
+ }
+ 
+ /*
+@@ -279,7 +288,8 @@
+     struct track *t;
+ 
+     list_for_each(t, &tracks, tracks) {
+-        if (t->importer == importer && t->path == path) {
++        if (__atomic_load_n(&t->import_result, __ATOMIC_ACQUIRE) >= 0
++            && t->importer == importer && strcmp(t->path, path) == 0) {
+             track_acquire(t);
+             return t;
+         }
+@@ -404,8 +414,10 @@
+         ssize_t z;
+ 
+         pcm = access_pcm(tr, &len);
+-        if (pcm == NULL)
++        if (pcm == NULL) {
++            tr->read_failed = true;
+             return -1;
++        }
+ 
+         z = read(tr->fd, pcm, len);
+         if (z == -1) {
+@@ -413,6 +425,7 @@
+                 return 0;
+             } else {
+                 perror("read");
++                tr->read_failed = true;
+                 return -1;
+             }
+         }
+@@ -453,6 +466,9 @@
+             status_printf(STATUS_ALERT, "Error importing %s", t->path);
+     }
+ 
++    __atomic_store_n(&t->import_result,
++        WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS
++        && !t->read_failed && t->length > 0 ? 1 : -1, __ATOMIC_RELEASE);
+     t->pid = 0;
+ }
+ 
+--- a/track.h
++++ b/track.h
+@@ -46,7 +46,8 @@
+ 
+     /* pointers to external data */
+    
+-    const char *importer, *path;
++    const char *importer;
++    char *path; /* owned by the track, independent of control clients */
+     
+     size_t bytes; /* loaded in */
+     unsigned int length, /* track length in samples */
+@@ -60,6 +61,8 @@
+     int fd;
+     struct pollfd *pe;
+     bool terminated;
++    int import_result; /* atomic: pending=0, decoded=1, failed=-1 */
++    bool read_failed;
+ 
+     /* Current value of audio meters when loading */
+     
+--- a/xwax.c
++++ b/xwax.c
+@@ -30,6 +30,7 @@
+ #include "device.h"
+ #include "dicer.h"
+ #include "dummy.h"
++#include "remote.h"
+ #include "interface.h"
+ #include "jack.h"
+ #include "library.h"
+@@ -67,6 +68,10 @@
+ 
+ static double speed;
+ static bool protect, phono;
++static const char *pending_socket;
++static const char *socket_path[3];
++static bool dummy_deck[3];
++static struct remote *remote[3];
+ static const char *importer;
+ static struct timecode_def *timecode;
+ 
+@@ -75,6 +80,8 @@
+     fprintf(fd, "Usage: xwax [<options>] [-- <path> ...]\n\n");
+ 
+     fprintf(fd, "Program-wide options:\n"
++      "  --no-interface      Run without the SDL interface\n"
++      "  --socket <path>     pi-dvs control socket for the next deck\n"
+       "  --lock-ram          Lock real-time memory into RAM\n"
+       "  --rtprio <n>        Real-time priority (0 for no priority, default %d)\n"
+       "  --geometry <s>      Set display geometry (see man page)\n"
+@@ -183,6 +190,9 @@
+     for (n = 0; n < nctl; n++)
+         controller_add_deck(&ctl[n], d);
+ 
++    socket_path[ndeck] = pending_socket;
++    pending_socket = NULL;
++    d->player.remote.enabled = socket_path[ndeck] != NULL;
+     ndeck++;
+ 
+     return 0;
+@@ -193,7 +203,7 @@
+     int rc = -1, n, priority;
+     const char *scanner, *geo;
+     char *endptr;
+-    bool use_mlock, decor;
++    bool use_mlock, decor, interface = true;
+ 
+     struct library library;
+ 
+@@ -440,6 +450,14 @@
+             argv += 2;
+             argc -= 2;
+ 
++        } else if (!strcmp(argv[0], "--no-interface")) {
++            interface = false;
++            argv++; argc--;
++        } else if (!strcmp(argv[0], "--socket")) {
++            if (argc < 2 || pending_socket != NULL)
++                return -1;
++            pending_socket = argv[1];
++            argv += 2; argc -= 2;
+         } else if (!strcmp(argv[0], "--dummy")) {
+ 
+             struct device *v;
+@@ -448,6 +466,7 @@
+             if (v == NULL)
+                 return -1;
+ 
++            dummy_deck[ndeck] = true;
+             dummy_init(v);
+             commit_deck();
+ 
+@@ -664,6 +683,16 @@
+         return -1;
+     }
+ 
++    if (pending_socket != NULL) {
++        fprintf(stderr, "--socket must precede a deck\n");
++        return -1;
++    }
++    for (n = 0; n < ndeck; n++) {
++        if (socket_path[n] && (interface || nctl != 0)) {
++            fprintf(stderr, "--socket requires --no-interface and no native MIDI controllers\n");
++            return -1;
++        }
++    }
+     rc = EXIT_FAILURE; /* until clean exit */
+ 
+     /* Order is important: launch realtime thread first, then mlock.
+@@ -677,7 +706,7 @@
+         goto out_rt;
+     }
+ 
+-    if (interface_start(&library, geo, decor) == -1)
++    if (interface && interface_start(&library, geo, decor) == -1)
+         goto out_rt;
+ 
+     for (n = 0; n < ndeck; n++) {
+@@ -689,6 +718,15 @@
+         }
+     }
+ 
++    for (n = 0; n < ndeck; n++) {
++        if (!socket_path[n])
++            continue;
++        remote[n] = remote_start(&deck[n], socket_path[n], dummy_deck[n]);
++        if (!remote[n]) {
++            perror("pi-dvs socket");
++            goto out_interface;
++        }
++    }
+     if (rig_main() == -1)
+         goto out_interface;
+ 
+@@ -696,9 +734,12 @@
+     fprintf(stderr, "Exiting cleanly...\n");
+ 
+ out_interface:
+-    interface_stop();
++    if (interface)
++        interface_stop();
+ out_rt:
+     rt_stop(&rt);
++    for (n = 0; n < ndeck; n++)
++        remote_stop(remote[n]);
+ 
+     for (n = 0; n < ndeck; n++)
+         deck_clear(&deck[n]);

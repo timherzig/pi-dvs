@@ -1,5 +1,6 @@
 """Qt models and user actions. Audio-independent behavior lives in the engine."""
 
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
@@ -18,7 +19,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from pi_dvs.engine import DemoEngine
+from pi_dvs.engine import DemoEngine, Engine
 from pi_dvs.jobs import JobKind, Jobs
 from pi_dvs.library import Library
 from pi_dvs.model import Status, Track
@@ -26,8 +27,9 @@ from pi_dvs.rekordbox import import_library, prepare_audio
 
 
 def time_label(seconds: float) -> str:
-    minutes, seconds = divmod(int(seconds), 60)
-    return f"{minutes:02}:{seconds:02}"
+    sign = "−" if seconds < 0 else ""
+    minutes, seconds = divmod(int(abs(seconds)), 60)
+    return f"{sign}{minutes:02}:{seconds:02}"
 
 
 def artwork_url(track: Track | None) -> str:
@@ -98,7 +100,7 @@ class Controller(QObject):
     browserChanged = Signal()
     importingChanged = Signal()
 
-    def __init__(self, library: Library, engine: DemoEngine, cache: Path | None = None) -> None:
+    def __init__(self, library: Library, engine: Engine, cache: Path | None = None) -> None:
         super().__init__()
         self._library = library
         self._engine = engine
@@ -116,7 +118,7 @@ class Controller(QObject):
         self._category = "tracks"
         self._selection = ""
         self._history: list[tuple[str, str]] = []
-        self._preparing: dict[int, Track] = {}
+        self._preparing: dict[int, tuple[Track, int]] = {}
         self._browse = library.browse("tracks")
         self._query = ""
         self._notice = ""
@@ -158,6 +160,10 @@ class Controller(QObject):
     @Property(str, notify=libraryChanged)
     def libraryName(self) -> str:
         return f"{self._library.name} · {self._library.format_name}"
+
+    @Property(bool, constant=True)
+    def isSimulation(self) -> bool:
+        return self._engine.simulation
 
     @Property(bool, notify=libraryChanged)
     def isDemo(self) -> bool:
@@ -276,12 +282,17 @@ class Controller(QObject):
             else:
                 self._set_notice(error)
             return
-        track = self._preparing.pop(deck, None)
+        pending = self._preparing.pop(deck, None)
         if error:
             self._set_notice(f"Cannot load audio: {error}")
-        elif track:
+        elif pending:
+            track, generation = pending
             try:
-                self._engine.load(deck, track)
+                self._engine.load(
+                    deck,
+                    replace(track, audio_path=result) if isinstance(result, Path) else track,
+                    generation=generation,
+                )
                 self._set_notice("")
             except ValueError as failure:
                 self._set_notice(str(failure))
@@ -290,6 +301,7 @@ class Controller(QObject):
     def close(self) -> None:
         self._timer.stop()
         self._jobs.close()
+        self._engine.close()
 
     @Property(str, notify=noticeChanged)
     def notice(self) -> str:
@@ -311,7 +323,7 @@ class Controller(QObject):
                 remaining=time_label(max(0, state.track.duration - state.position))
                 if state.track
                 else "00:00",
-                progress=state.position / state.track.duration
+                progress=max(0.0, min(1.0, state.position / state.track.duration))
                 if state.track and state.track.duration
                 else 0.0,
                 canLoad=state.can_change_track,
@@ -321,6 +333,7 @@ class Controller(QObject):
                 platterSpinning=state.platter_spinning,
                 playing=state.status == Status.PLAYING,
                 error=state.error,
+                transportMessage=state.transport_message,
             )
             for index, state in enumerate(self._engine.decks)
         ]
@@ -332,10 +345,14 @@ class Controller(QObject):
             if deck not in (0, 1):
                 raise ValueError("Choose deck A or B")
             if not self._engine.decks[deck].can_change_track:
-                raise ValueError("Stop the record or lift the needle before changing tracks")
+                raise ValueError(
+                    "Stop the record or lift the needle before changing tracks"
+                    if self.isSimulation
+                    else "Wait for a connected, stopped engine before changing tracks"
+                )
             track = self._library.get(track_id)
             if not self.isDemo:
-                self._preparing[deck] = track
+                self._preparing[deck] = (track, self._engine.decks[deck].connection_generation)
                 self._jobs.submit(JobKind.for_deck(deck), lambda event: prepare_audio(track))
             else:
                 self._jobs.cancel(JobKind.for_deck(deck))
@@ -349,6 +366,8 @@ class Controller(QObject):
 
     @Slot(int, bool)
     def setNeedleDown(self, deck: int, down: bool) -> None:
+        if not isinstance(self._engine, DemoEngine):
+            return
         self._tick()
         self._engine.set_needle(deck, down)
         self._set_notice("")
@@ -356,6 +375,8 @@ class Controller(QObject):
 
     @Slot(int, bool)
     def setPlatterSpinning(self, deck: int, spinning: bool) -> None:
+        if not isinstance(self._engine, DemoEngine):
+            return
         self._tick()
         self._engine.set_platter(deck, spinning)
         self._set_notice("")

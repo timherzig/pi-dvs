@@ -2,8 +2,8 @@
 
 A small standalone digital vinyl system for a Raspberry Pi, Xone PX5 mixer,
 and Serato NoiseMap control vinyl. The desktop app browses real Rekordbox USB exports and loads two independent
-decks. Transport is still a **silent simulation**; real audio follows in the
-xwax integration milestone.
+decks. Transport defaults to a **silent simulation**. An optional local Linux
+connection uses a pinned, patched xwax engine; hardware routing is a separate milestone.
 
 ## Run on your Mac
 
@@ -74,7 +74,7 @@ the whole library; inside a playlist or category, search filters that view.
 Category lists search their names. Search ignores case and accents.
 Select a track and use **Load A/B**, or Ctrl+1/Ctrl+2. Audio files are checked again
 before loading; missing or unsupported files have a reason and disabled load buttons.
-The deck transport remains simulated and does not produce sound.
+Without `--xwax-sockets`, deck transport remains simulated and does not produce sound.
 
 **Auto** uses traditional Device Library (`export.pdb`) first and falls back to
 OneLibrary (`exportLibrary.db`) with a visible notice if necessary. The format
@@ -85,6 +85,21 @@ a failed import preserves the last usable catalog and loaded decks.
 The application reads source media only. Artwork is cached on the computer;
 missing or undecodable covers use the existing fallback. See
 [USB formats, limitations, and verification](docs/rekordbox.md) for details.
+
+## Connect to xwax on Linux
+
+Build and start the pinned engine, then select its two local deck sockets:
+
+```sh
+uv run --locked pi-dvs --xwax-sockets /path/to/a.sock /path/to/b.sock --library /path/to/usb
+```
+
+The application reports confirmed engine state and hides simulation controls.
+A disconnect disables loading; reconnect reads the existing decks without
+replaying commands. Unmodified upstream binaries do not provide the
+required confirmed-import extension. See [engine setup and verification](docs/xwax.md)
+for the exact revision, patch, dependencies, license and a hardware-free Linux
+smoke check. PX5 audio routing, latency and vinyl behavior still need hardware tests.
 
 ## Development
 
@@ -121,7 +136,8 @@ The engine and library contain no Qt or audio-device code. The GUI passes elapse
 time into the demo engine and displays snapshots; it does not own deck state.
 A real xwax integration must report the engine's confirmed state instead of
 assuming a sent load command succeeded. The source-aware track values retain export IDs and media-relative paths for
-future remote retrieval; there is no production audio adapter yet.
+future remote retrieval. The optional `xwax/` adapter serializes commands and status
+polling on background workers; Python stays outside the real-time audio path.
 
 The USB reader keeps mounting/hotplug separate from parsing. Traditional
 Rekordbox exports use `PIONEER/rekordbox/export.pdb`, while OneLibrary exports use
@@ -141,12 +157,13 @@ The follow-up tickets include acceptance criteria and dependencies:
 7. [Drive playback from absolute vinyl position](https://github.com/timherzig/pi-dvs/issues/12).
 8. [Research reliable needle-up detection](https://github.com/timherzig/pi-dvs/issues/13).
 
-[Waxcode](https://www.waxcode.co/) and its
-[xwax fork](https://github.com/mhallrp/waxcode-xwax) are reference projects. No
-Waxcode source or binary is included in this demo. Engine selection and PX5 audio
-configuration still need validation.
+[Upstream xwax](https://xwax.org/) 1.10 with a focused headless/control extension
+provides the optional engine. The pinned source, audio/control separation and
+verification are documented in [engine setup](docs/xwax.md).
+The Python wheel contains no xwax binary; PX5 configuration still needs validation.
 
 ## License
 
-Project code and demo fixtures: Apache-2.0, see [LICENSE](LICENSE).
+Application code and demo fixtures: Apache-2.0, see [LICENSE](LICENSE).
+The xwax engine patch is GPL-3.0; see [its notice](scripts/xwax/NOTICE).
 Qt/PySide is a separate dependency under its own license terms.

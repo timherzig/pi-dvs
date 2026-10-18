@@ -103,7 +103,8 @@ Rectangle {
                 Accessible.name: "Unload deck " + card.deckName
             }
             Text {
-                text: (card.deckState.needleDown ? "Needle down" : "Needle lifted")
+                text: !card.controller.isSimulation ? card.deckState.transportMessage
+                      : (card.deckState.needleDown ? "Needle down" : "Needle lifted")
                       + " · " + (card.deckState.platterSpinning ? "Spinning" : "Stopped")
                 color: "#99a6af"
                 font.pixelSize: 11
