@@ -26,6 +26,6 @@ Rectangle {
         source: cover.artwork
         visible: status === Image.Ready
         fillMode: Image.PreserveAspectCrop
-        asynchronous: false
+        asynchronous: true
     }
 }

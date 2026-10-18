@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject, QPoint, Qt
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPoint, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
@@ -37,6 +37,24 @@ def _item(root, name):
 
 
 def _click(window, name):
+    if name.startswith(("loadA_", "loadB_")):
+        # Find and scroll to the track instead of assuming the demo's insertion
+        # order places every requested button inside the current viewport.
+        track_list = window.findChild(QObject, "trackList")
+        model = window.property("controller").libraryModel
+        id_role = next(role for role, label in model.roleNames().items() if label == b"trackId")
+        row = next(
+            row
+            for row in range(model.rowCount())
+            if model.data(model.index(row), id_role) == name.split("_", 1)[1]
+        )
+        QMetaObject.invokeMethod(
+            track_list,
+            "positionViewAtIndex",
+            Q_ARG(int, row),
+            Q_ARG(int, 2),  # ListView.Contain
+        )
+        QTest.qWait(20)
     item = _item(window, name)
     assert item.isEnabled()
     point = item.mapToScene(QPoint(int(item.width() / 2), int(item.height() / 2))).toPoint()
@@ -113,6 +131,7 @@ def test_search_load_transport_and_error_recovery_through_qml(app):
         assert controller.notice
         assert not warnings
     finally:
+        controller.close()
         for window in engine.rootObjects():
             window.close()
         engine.deleteLater()
@@ -166,6 +185,7 @@ def test_stopping_vinyl_at_track_end_does_not_restart(app, monkeypatch, deck, en
         assert not _item(window, "unload" + target).isEnabled()
         assert controller.decks[1 - deck]["progress"] == pytest.approx((343 + end_offset) / 428)
     finally:
+        controller.close()
         for window in engine.rootObjects():
             window.close()
         engine.deleteLater()
