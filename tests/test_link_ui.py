@@ -301,3 +301,140 @@ def test_reloading_an_evicted_cover_fetches_it_again(app, tmp_path, monkeypatch)
             until(lambda: bool(controller.decks[0]["artwork"]) and cover.exists())
         finally:
             close(engine, controller)
+
+
+def test_selecting_disconnected_cdj_recovers_without_reselection(app, tmp_path, monkeypatch):
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    link = LinkService("test", tmp_path / "helper", tmp_path / "cache")
+    monkeypatch.setattr(link, "start", lambda: None)
+    with Peer(files=files, sparse=True) as peer:
+        patch_client(monkeypatch, peer)
+        engine, controller = create_window(link=link)
+        try:
+            controller.openExport(str(FIXTURE.resolve()), "pdb")
+            until(lambda: not controller.importing)
+            link.update_peers(message(), "before-reset")
+            remote = next(v.media for v in link.sources.views() if v.media.address)
+            link._offline("Link connection lost")
+            controller.selectSource(remote.key)
+            assert not controller.importing
+            assert controller.notice
+            # The adapter returns; no extra click/Refresh should be required.
+            link.update_peers(message(), "after-reset")
+            until(lambda: not controller.importing and controller.libraryName.startswith("CDJ 1"))
+            assert controller._library.search("cafe")
+            assert controller.notice == ""
+        finally:
+            close(engine, controller)
+
+
+def test_first_cdj_import_retries_after_disconnect_but_cancel_abandons_selection(
+    app, tmp_path, monkeypatch
+):
+    from pi_dvs.rekordbox.records import ImportCancelled
+
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    link = LinkService("test", tmp_path / "helper", tmp_path / "cache")
+    monkeypatch.setattr(link, "start", lambda: None)
+    original = link.catalog
+    started = Event()
+    calls = []
+
+    def delayed(key, event, **kwargs):
+        calls.append(key)
+        if len(calls) == 1:
+            started.set()
+            assert event.wait(3)
+            raise ImportCancelled()
+        return original(key, event, **kwargs)
+
+    monkeypatch.setattr(link, "catalog", delayed)
+    with Peer(files=files, sparse=True) as peer:
+        patch_client(monkeypatch, peer)
+        engine, controller = create_window(link=link)
+        try:
+            controller.openExport(str(FIXTURE.resolve()), "pdb")
+            until(lambda: not controller.importing)
+            local = controller._source_key
+            link.update_peers(message(), "first")
+            remote = next(v.media for v in link.sources.views() if v.media.address)
+            controller.selectSource(remote.key)
+            until(started.is_set)
+            link._offline("Link connection lost")
+            until(lambda: not controller.importing)
+            link.update_peers(message(), "second")
+            until(lambda: not controller.importing and controller.libraryName.startswith("CDJ 1"))
+            assert len(calls) == 2 and controller.notice == ""
+            controller.selectSource(local)
+            until(lambda: not controller.importing and controller.localSource)
+            link._offline("Link connection lost")
+            controller.selectSource(remote.key)
+            window = engine.rootObjects()[0]
+            until(lambda: _item(window, "cancelImport").isVisible())
+            _click(window, "cancelImport")
+            assert not _item(window, "cancelImport").isVisible()
+            link.update_peers(message(), "third")
+            controller._sync_sources()
+            assert controller._source_key == local
+            assert not controller._requested_source and not controller.importing
+            assert len(calls) == 3  # The explicitly selected local library only.
+        finally:
+            close(engine, controller)
+
+
+def test_cancel_selected_cdj_reconnect_survives_source_revisions(app, tmp_path, monkeypatch):
+    from pi_dvs.link.media import relabel
+    from pi_dvs.rekordbox.records import ImportCancelled
+
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    link = LinkService("test", tmp_path / "helper", tmp_path / "cache")
+    monkeypatch.setattr(link, "start", lambda: None)
+    with Peer(files=files, sparse=True) as peer:
+        patch_client(monkeypatch, peer)
+        engine, controller = create_window(link=link)
+        try:
+            window = engine.rootObjects()[0]
+            link.update_peers(message(), "first")
+            remote = link.sources.views()[0].media
+            controller.selectSource(remote.key)
+            until(lambda: not controller.importing)
+            accepted = controller._library
+            started = Event()
+            calls = []
+
+            def blocked(key, event, **kwargs):
+                calls.append(key)
+                started.set()
+                assert event.wait(3)
+                raise ImportCancelled()
+
+            monkeypatch.setattr(link, "catalog", blocked)
+            link._offline("Link connection lost")
+            controller._sync_sources()
+            link.update_peers(message(), "second")
+            until(started.is_set)
+            _click(window, "cancelImport")
+            assert not controller.importing
+            link.sources.observe("unrelated", "Another USB", "one")
+            controller._sync_sources()
+            assert not controller.importing
+            fresh = link.sources.view(remote.key).media
+            link.sources.publish(fresh, relabel(accepted, fresh))
+            controller._sync_sources()
+            assert not controller.importing
+            assert controller._library.source_id == accepted.source_id
+            assert calls == [remote.key]
+        finally:
+            close(engine, controller)

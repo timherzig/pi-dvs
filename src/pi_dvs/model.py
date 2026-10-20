@@ -28,6 +28,7 @@ class Track:
     bitrate: int = 0
     bit_depth: int = 0
     unavailable_reason: str = ""
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class Status(StrEnum):
     STOPPED = "Stopped"
     FINISHED = "Finished"
     ERROR = "Unavailable"
+    BUFFERING = "Buffering"
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,9 @@ class DeckState:
     change_allowed: bool | None = None
     transport_message: str = ""
     connection_generation: int = 0
+    buffered_duration: float | None = None
+    download_complete: bool = True
+    load_pending: bool = False
 
     @property
     def can_change_track(self) -> bool:

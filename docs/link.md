@@ -3,7 +3,7 @@
 The optional Link adapter supports both directions on a wired DJ network:
 
 - Browse a CDJ-hosted Device Library USB and download a selected track to a
-  host-local cache before loading a pi-dvs deck.
+  host-local cache, with early playback for supported AIFF files.
 - Share the selected, mounted local Rekordbox USB with CDJs through the separate
   `pi-dvs-link` helper. CDJs play the original audio from that USB.
 
@@ -52,7 +52,29 @@ READ blocks are 1,280 bytes, paced at a ceiling of 256 KiB/s; retries use the sa
 transaction ID and also obey pacing. Per-request retries and whole-operation
 limits prevent indefinite network waits. A 2.46 MB MP3 took about 11 seconds in
 the original two-player hardware trial. Larger files take proportionally longer;
-this is complete-file retrieval before playback, not remote audio streaming.
+supported AIFF files can start playing while this retrieval continues.
+
+With the current xwax build, 44.1 kHz, stereo, 16-bit PCM AIFF loads after ten
+seconds of audio have been decoded (or the whole audio portion for a shorter
+track). At the conservative download pace this normally takes about seven to ten
+seconds plus catalog/network overhead. No lossy conversion is introduced: the
+importer preserves the PCM sample values and changes only byte order for xwax.
+Other formats/layouts retain complete-file loading. Downloads remain serialized;
+a second new track waits while the first transfer finishes.
+
+The deck timeline shows decoded, playable audio separately from the playhead;
+the percentage text reports bytes downloaded. The total duration stays fixed.
+Seeking or running beyond the available prefix produces silence and a Buffering
+status; the app does not slow the record or fabricate samples. Normal vinyl
+positioning and xwax's motion protection still apply. A complete cache entry is
+published only after final source/size/hash checks. During an unfinished import,
+USB removal cancels the producer and displays an error; only already buffered
+audio remains available. Closing the GUI also cancels unfinished downloads.
+Private prefixes stay retained while the separate engine owns their descriptors.
+A dead producer times out after fifteen seconds without progress.
+
+Both the Python app and native engine/importer must be updated for this feature;
+an older engine rejects the STREAM command without replacing its current track.
 
 Serving uses a separate per-player budget selected for each file. The tested
 44.1 kHz/16-bit PCM files use 256 KiB/s. Known PCM formats use their stereo data

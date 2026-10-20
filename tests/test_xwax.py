@@ -462,3 +462,43 @@ def test_stopped_audio_callbacks_disable_changes_and_recover(pair):
     wait_for(lambda: engine.decks[0].status == Status.EMPTY)
     assert engine.decks[0].can_change_track
     assert not mutations(a)
+
+
+def test_progressive_status_keeps_total_duration_and_confirms_before_complete(pair):
+    engine, (a, _) = pair
+    a.auto = False
+    track = replace(audio(), duration=120, streaming=True)
+    engine.load(0, track)
+    wait_for(lambda: a.state.result == "PENDING")
+    request = a.state.request_id
+    a.override = (
+        f"DVS2 STREAM_STATE {request} OK STREAMING 0 1 1 0 0 120 0 10 {track.audio_path}\n"
+    ).encode()
+    wait_for(lambda: engine.decks[0].status == Status.READY)
+    assert engine.decks[0].track.duration == 120
+    assert engine.decks[0].buffered_duration == 10
+    assert not engine.decks[0].download_complete
+    assert engine.decks[0].can_change_track
+    # No command timeout while a confirmed progressive import is still growing.
+    sleep(0.4)
+    assert engine.decks[0].status == Status.READY
+    a.override = (
+        f"DVS2 STREAM_STATE {request} OK STREAMING 1 1 1 1 20 120 1 10 {track.audio_path}\n"
+    ).encode()
+    wait_for(lambda: engine.decks[0].status == Status.BUFFERING)
+    assert not engine.decks[0].can_change_track
+    a.override = (
+        f"DVS2 STREAM_STATE {request} OK STREAMING 1 1 1 1 20 120 1 30 {track.audio_path}\n"
+    ).encode()
+    wait_for(lambda: engine.decks[0].status == Status.PLAYING)
+    a.override = (
+        f"DVS2 STREAM_STATE {request} OK READY 0 1 1 1 20 120 0 120 {track.audio_path}\n"
+    ).encode()
+    wait_for(lambda: engine.decks[0].download_complete)
+    assert engine.decks[0].buffered_duration == 120
+
+
+@pytest.mark.parametrize("extent", ["nan", "inf", "-1", "invalid"])
+def test_progressive_telemetry_rejects_invalid_extent(extent):
+    with pytest.raises(ProtocolError):
+        parse_status(f"DVS2 STREAM_STATE - NONE STREAMING 0 1 1 0 0 120 0 {extent} /stream")

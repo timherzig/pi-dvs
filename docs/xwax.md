@@ -21,7 +21,7 @@ Unmodified upstream and Waxcode binaries do not implement the `DVS2` contract.
 
 On Ubuntu 24.04, dependencies are `build-essential`, `pkg-config`, `libsdl2-dev`,
 `libsdl2-ttf-dev`, `libasound2-dev`, `ffmpeg`, `curl`, CA certificates, `patch`,
-and Python 3 for the smoke. SDL remains a link dependency even in headless mode.
+and Python 3 for the progressive importer and smoke. SDL remains a link dependency even in headless mode.
 No new Python runtime dependency is required.
 
 ```sh
@@ -139,6 +139,7 @@ Only these newline-terminated UTF-8 commands are supported:
 
 ```text
 DVS2 LOAD <32 lowercase hex request ID> <absolute path>
+DVS2 STREAM <32 lowercase hex request ID> <total seconds> <absolute descriptor path>
 DVS2 UNLOAD <32 lowercase hex request ID>
 DVS2 STATUS
 DVS2 METRICS
@@ -164,6 +165,24 @@ with an empty path. A request's ID/result survive reconnect, not engine restart.
 A rejected ACK does not overwrite an in-flight request. A matching ID, final
 result and expected track/empty state confirm the command, including same-path
 loads. The client never retries an uncertain mutation.
+
+Progressive STREAM loads use a private `.pidvs-stream` descriptor and the bundled
+standard-library Python AIFF importer. Supported input is stereo 16-bit PCM at
+44.1 kHz. The control thread keeps the previous track until at least ten seconds
+(or a shorter track's full duration) have decoded, then requests the same
+motion-protected callback handoff as LOAD. Streaming decks report:
+
+```text
+DVS2 STREAM_STATE <id|-> <result> <state> <active> <protected> <timecodeControl> <positionKnown> <elapsed> <total duration> <pitch> <decoded duration> <path>
+```
+
+`STREAMING` confirms early attachment; `READY` requires successful final import
+and matching decoded duration. A failed/truncated import reports `ERROR`, even
+when it emitted PCM first. The importer waits at temporary EOF outside the audio
+callback; its producer timeout is bounded. A stopped streaming deck may be
+unloaded or replaced. Total duration never follows the growing buffer. The
+progressive smoke checks early attachment, growing prefixes, short tracks,
+stopped unload and terminal source failure against the actual native binary.
 
 `DVS2 STALE` disables app mutations when real audio callbacks stop advancing for
 500 ms. Dummy devices explicitly bypass that check. `DVS2 METRICS` replies with

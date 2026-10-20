@@ -76,15 +76,40 @@ Rectangle {
             spacing: 6
             Rectangle {
                 Layout.fillWidth: true
-                height: 3
-                radius: 1.5
+                objectName: "timeline" + card.deckName
+                height: 7
+                radius: 3.5
                 color: "#3b444c"
                 Rectangle {
-                    width: parent.width * card.deckState.progress
+                    objectName: "loadedAudio" + card.deckName
+                    width: parent.width * card.deckState.loadedProgress
+                    height: parent.height
+                    radius: parent.radius
+                    color: "#657d83"
+                }
+                Rectangle {
+                    width: parent.width * Math.min(card.deckState.progress, card.deckState.loadedProgress)
                     height: parent.height
                     radius: parent.radius
                     color: card.accent
                 }
+                Rectangle {
+                    x: Math.max(0, Math.min(parent.width - width, parent.width * card.deckState.progress))
+                    width: 2
+                    height: parent.height + 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#f0ebe3"
+                }
+                Accessible.name: "Playable audio " + Math.round(card.deckState.loadedProgress * 100) + " percent"
+            }
+            Text {
+                objectName: "downloadProgress" + card.deckName
+                text: card.deckState.downloadMessage
+                visible: text.length > 0
+                color: "#aeb8be"
+                font.pixelSize: 11
+                Layout.fillWidth: true
+                elide: Text.ElideRight
             }
             RowLayout {
                 Layout.fillWidth: true

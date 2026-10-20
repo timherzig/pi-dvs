@@ -28,5 +28,17 @@ cp "$script_dir/check-realtime.c" "$scratch/source/"
     -Wl,--wrap=fwrite,--wrap=fflush,--wrap=strdup -o check-realtime)
 mkdir -p "$destination"
 cp "$scratch/source/check-realtime" "$scratch/source/xwax" "$scratch/source/import" "$scratch/source/COPYING" "$scratch/source/README" "$destination/"
+mv "$destination/import" "$destination/import-original"
+cp "$script_dir/../../src/pi_dvs/stream_audio.py" "$destination/stream-import.py"
+cat > "$destination/import" <<'IMPORT'
+#!/bin/sh
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+case "$1" in
+  *.pidvs-stream) exec python3 "$here/stream-import.py" "$@" ;;
+  *) exec "$here/import-original" "$@" ;;
+esac
+IMPORT
+chmod +x "$destination/import"
 printf '%s\n' "$revision" > "$destination/REVISION"
-(cd "$script_dir" && sha256sum confirmed-state.patch remote.c remote.h) > "$destination/PATCH.sha256"
+(cd "$script_dir" && sha256sum confirmed-state.patch remote.c remote.h ../../src/pi_dvs/stream_audio.py build.sh) > "$destination/PATCH.sha256"

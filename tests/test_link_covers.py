@@ -169,3 +169,50 @@ def test_slow_cache_write_does_not_block_gui_pins(tmp_path, monkeypatch):
         release.set()
         worker.join(3)
         pin.join(3)
+
+
+def test_cover_deadline_starts_after_waiting_for_progressive_audio(tmp_path, monkeypatch):
+    import time
+    from contextlib import contextmanager
+    from threading import Thread
+
+    import pi_dvs.link.service as module
+
+    # Keep the real cancellation/deadline and transfer gate, with a short budget.
+    monkeypatch.setattr(module, "CoverCancel", lambda parent: CoverCancel(parent, seconds=0.2))
+    exported = files()
+    with Peer(files=exported, sparse=True) as peer:
+        patch_client(monkeypatch, peer)
+        link = service(tmp_path)
+        link.update_peers(message(), "one")
+        track = link.catalog(link.sources.views()[0].media.key, Event()).search("cafe")[0]
+        results = []
+        waiting = Event()
+
+        original_transfer = link._transfer
+
+        @contextmanager
+        def queued(cancelled):
+            waiting.set()
+            with original_transfer(cancelled):
+                yield
+
+        monkeypatch.setattr(link, "_transfer", queued)
+
+        def fetch():
+            results.append(link.cover(track, Event()))
+
+        worker = Thread(target=fetch, daemon=True)
+        try:
+            # A progressive producer owns this gate beyond the cover's budget.
+            with original_transfer(Cancel(Event())):
+                worker.start()
+                assert waiting.wait(1)
+                time.sleep(0.35)
+            worker.join(3)
+            assert not worker.is_alive()
+            assert results and results[0] is not None
+            assert results[0].read_bytes() == exported[track.artwork_path]
+        finally:
+            link.close()
+            worker.join(3)

@@ -24,6 +24,8 @@ class Snapshot:
     duration: float
     pitch: float
     path: str
+    streaming: bool = False
+    buffered_duration: float | None = None
 
     @property
     def can_change(self) -> bool:
@@ -38,8 +40,10 @@ class Snapshot:
 def parse_status(line: str) -> Snapshot:
     if line == "DVS2 STALE":
         raise ProtocolError("xwax audio callbacks stopped; check the audio device and engine log")
-    fields = line.split(" ", 12)
-    if len(fields) != 13 or fields[:2] != ["DVS2", "STATE"]:
+    streaming = line.startswith("DVS2 STREAM_STATE ")
+    fields = line.split(" ", 13 if streaming else 12)
+    decoded = fields.pop(12) if streaming and len(fields) == 14 else None
+    if len(fields) != 13 or fields[:2] != ["DVS2", "STREAM_STATE" if streaming else "STATE"]:
         raise ProtocolError("Expected the pinned pi-dvs DVS2 engine; rebuild it with our patch")
     (
         _,
@@ -63,6 +67,7 @@ def parse_status(line: str) -> Snapshot:
     if result not in {"NONE", "PENDING", "OK", "LOCKED", "ERROR"} or state not in {
         "EMPTY",
         "IMPORTING",
+        "STREAMING",
         "READY",
         "ERROR",
     }:
@@ -71,10 +76,15 @@ def parse_status(line: str) -> Snapshot:
         raise ProtocolError("Invalid engine flags")
     try:
         numbers = tuple(float(v) for v in (elapsed, duration, pitch))
+        buffered = float(decoded) if decoded is not None else None
     except ValueError as error:
         raise ProtocolError("Invalid engine position") from error
     if not all(math.isfinite(v) for v in numbers) or numbers[1] < 0:
         raise ProtocolError("Invalid engine position or duration")
+    if state == "STREAMING" and not streaming:
+        raise ProtocolError("Progressive state requires buffer telemetry")
+    if streaming and (buffered is None or not math.isfinite(buffered) or buffered < 0):
+        raise ProtocolError("Invalid decoded audio extent")
     if (state == "EMPTY" and path) or (state != "EMPTY" and not path.startswith("/")):
         raise ProtocolError("Invalid engine track path")
     if any(c in path for c in "\r\n\0"):
@@ -91,11 +101,19 @@ def parse_status(line: str) -> Snapshot:
         numbers[1],
         numbers[2],
         path,
+        streaming,
+        buffered,
     )
 
 
-def command_line(request_id: str, path: Path | None) -> bytes:
+def command_line(
+    request_id: str, path: Path | None, *, stream_duration: float | None = None
+) -> bytes:
     command = f"DVS2 UNLOAD {request_id}" if path is None else f"DVS2 LOAD {request_id} {path}"
+    if stream_duration is not None:
+        if path is None or not math.isfinite(stream_duration) or not 0 < stream_duration <= 3600:
+            raise ValueError("Invalid progressive track duration")
+        command = f"DVS2 STREAM {request_id} {stream_duration:.9f} {path}"
     if path is not None and not path.is_absolute():
         raise ValueError("xwax requires an absolute audio path")
     if any(c in command for c in "\n\r\0"):

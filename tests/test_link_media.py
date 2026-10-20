@@ -144,3 +144,80 @@ def test_exclusive_cache_owner_removes_only_abandoned_partial_audio(tmp_path):
         with owner.use():
             assert active.exists()  # only first acquisition cleans up
     owner.close()
+
+
+def test_retiring_stream_during_cache_admission_does_not_fail_new_load(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    cache = AudioCache(tmp_path, limit=20)
+    partial = tmp_path / ".streams" / "retiring" / "audio.aiff"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"old prefix")
+    original = Path.stat
+
+    removed = []
+
+    def racing_stat(path, **kwargs):
+        if path == partial and not removed:
+            removed.append(True)
+            path.unlink()
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    track = Track("new", "New", "", 1, relative_path="new.aiff")
+
+    def fetch(path):
+        path.write_bytes(b"new")
+        return Download(3, hashlib.sha256(b"new").hexdigest(), (), 0)
+
+    assert cache.materialize(track, 3, fetch, Cancel(Event())).read_bytes() == b"new"
+    assert removed
+
+
+def test_slow_admission_scan_does_not_block_gui_and_rechecks_new_pins(tmp_path, monkeypatch):
+    from pathlib import Path
+    from threading import Thread
+
+    cache = AudioCache(tmp_path, limit=6)
+    old = Track("old", "Old", "", 1, relative_path="old.aiff")
+    new = replace(old, id="new")
+
+    def fetch(path):
+        path.write_bytes(b"abcdef")
+        return Download(6, hashlib.sha256(b"abcdef").hexdigest(), (), 0)
+
+    path = cache.materialize(old, 6, fetch, Cancel(Event()))
+    entered, release, pinned = Event(), Event(), Event()
+    original = Path.glob
+
+    def slow_scan(directory, pattern):
+        if directory.name == ".streams":
+            entered.set()
+            assert release.wait(3)
+        return original(directory, pattern)
+
+    monkeypatch.setattr(Path, "glob", slow_scan)
+    errors = []
+
+    def load():
+        try:
+            cache.materialize(new, 6, fetch, Cancel(Event()))
+        except ImportFailure as error:
+            errors.append(error)
+
+    def pin():
+        cache.protect((old,))
+        pinned.set()
+
+    worker = Thread(target=load, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        gui = Thread(target=pin, daemon=True)
+        gui.start()
+        assert pinned.wait(0.2)
+    finally:
+        release.set()
+        worker.join(2)
+    assert errors and "full" in str(errors[0])
+    assert path.exists()

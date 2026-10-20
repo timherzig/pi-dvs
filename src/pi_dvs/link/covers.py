@@ -94,7 +94,7 @@ class Covers:
 
 
 class CoverCancel(Cancel):
-    """A cover must not occupy the shared transfer queue for an unbounded time."""
+    """Bound cover I/O after it acquires the shared transfer queue."""
 
     def __init__(self, parent: Cancel, seconds: float = 8) -> None:
         super().__init__(parent)

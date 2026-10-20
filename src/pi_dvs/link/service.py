@@ -21,6 +21,7 @@ from pi_dvs.link.covers import MAX_COVER_BYTES, CoverCancel, Covers
 from pi_dvs.link.media import AudioCache, CacheLease, Cancel, Media, Sources, relabel
 from pi_dvs.link.nfs import Client, Download
 from pi_dvs.link.power import prevent_idle_sleep
+from pi_dvs.link.streams import PreparedAudio, Progress, Streams
 from pi_dvs.model import Track
 from pi_dvs.rekordbox import MAX_DATABASE_BYTES, import_library, media_path
 from pi_dvs.rekordbox.records import ImportCancelled, ImportFailure
@@ -37,6 +38,7 @@ class LinkService:
         self._lease = CacheLease(cache)
         self.sources = Sources()
         self.audio = AudioCache(cache / "audio", cache_bytes)
+        self.streams = Streams(cache / "audio" / ".streams", self._lease)
         self.covers = Covers(cache / "remote-covers")
         self.stop = Event()
         self._lock = RLock()
@@ -176,7 +178,19 @@ class LinkService:
         with self._lease.use():
             return self._prepare(track, event)
 
-    def _prepare(self, track: Track, event: Event) -> Path:
+    def prepare_progressive(self, track: Track, event: Event) -> PreparedAudio:
+        if (
+            Path(track.relative_path).suffix.lower() not in {".aif", ".aiff"}
+            or self.sources.media(track.source_id).root is not None
+        ):
+            return PreparedAudio(self.prepare(track, event))
+
+        def fetch(cancelled: Event, progress: Progress) -> Path:
+            return self._prepare(track, cancelled, progress=progress)
+
+        return self.streams.prepare(track, event, fetch)
+
+    def _prepare(self, track: Track, event: Event, *, progress: Progress | None = None) -> Path:
         try:
             media = self.sources.media(track.source_id)
         except KeyError as error:
@@ -203,7 +217,10 @@ class LinkService:
 
                 def fetch(path: Path) -> Download:
                     return client.download(
-                        track.relative_path, path, expected_identity=info.identity
+                        track.relative_path,
+                        path,
+                        expected_identity=info.identity,
+                        progress=progress,
                     )
 
                 path = self.audio.materialize(track, info.size, fetch, cancelled)
@@ -230,10 +247,12 @@ class LinkService:
             try:
                 original = media_path(Path("/pi-dvs-remote"), track.artwork_path)
                 relative = original.relative_to("/pi-dvs-remote")
-                bounded = CoverCancel(cancelled)
                 for candidate in (relative.with_stem(relative.stem + "_m"), relative):
                     try:
-                        with self._transfer(bounded):
+                        # Waiting behind progressive audio is not a stalled cover.
+                        # Its I/O deadline starts only once it owns the queue.
+                        with self._transfer(cancelled):
+                            bounded = CoverCancel(cancelled)
                             with self._lock:
                                 address = self._address
                                 identity = self._db_identity.get(media.source_id)
@@ -546,6 +565,7 @@ class LinkService:
             delay = min(10, delay * 2)
 
     def close(self) -> None:
+        self.streams.close()
         self.stop.set()
         self.sources.close()
         Thread(target=self._lease.close, name="pi-dvs-cache-close", daemon=True).start()

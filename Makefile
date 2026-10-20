@@ -27,7 +27,7 @@ package:
 	uv run --locked python scripts/check_package.py
 
 xwax-smoke:
-	docker build -t pi-dvs-xwax-smoke scripts/xwax
+	docker build -t pi-dvs-xwax-smoke -f scripts/xwax/Dockerfile .
 	docker run --rm --network none -v "$(CURDIR):/app:ro" pi-dvs-xwax-smoke
 
 link-build:

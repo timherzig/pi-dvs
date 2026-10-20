@@ -272,3 +272,61 @@ def test_unavailable_cache_reports_error_instead_of_losing_supervisor(tmp_path):
     assert "unavailable" in link.status
     assert "cache" in link.status
     link.close()
+
+
+def test_progressive_remote_audio_starts_early_and_usb_loss_never_completes_cache(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    from test_stream_audio import aiff
+
+    from pi_dvs.stream_audio import read_object
+
+    data, _ = aiff(frames=44100 * 20)
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    files["/test.aiff"] = data
+    paused, release = Event(), Event()
+    with Peer(files=files, sparse=True) as peer:
+        patch_client(monkeypatch, peer)
+        link = service(tmp_path)
+        try:
+            link.update_peers(message(), "process")
+            key = link.sources.views()[0].media.key
+            track = replace(
+                link.catalog(key, Event()).search("cafe")[0],
+                relative_path="/test.aiff",
+                duration=20,
+                sample_rate=44100,
+                bit_depth=16,
+            )
+            link.streams.protect((track,), authoritative=True)
+            link.audio.protect((track,))
+
+            def hold(path):
+                if path == "/test.aiff" and peer.reads[-1][1] >= 2 * 1024 * 1024:
+                    paused.set()
+                    assert release.wait(3)
+
+            peer.read_hook = hold
+            prepared = link.prepare_progressive(track, Event())
+            assert prepared.streaming and prepared.duration == 20
+            assert paused.wait(1)
+            assert not list(link.audio.root.glob(".audio-*"))
+            assert read_object(prepared.path.parent / "state.json")["status"] == "loading"
+            link.update_peers(message(False), "process")
+            release.set()
+            deadline = time.monotonic() + 2
+            while link.streams.state(track).status != "failed" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert link.streams.state(track).status == "failed"
+            assert not list(link.audio.root.glob(".audio-*"))
+            assert not list(link.audio.root.glob(".partial-*"))
+            assert (prepared.path.parent / "audio.aiff").stat().st_size >= 10 * 44100 * 4
+        finally:
+            release.set()
+            link.close()

@@ -93,7 +93,9 @@ struct remote_snapshot remote_read(struct player *pl)
 
 struct remote {
     struct deck *deck;
-    struct track *track;
+    struct track *track, *preparing;
+    bool streaming, pending_streaming;
+    double total_duration, pending_duration;
     char *path, *pending_path;
     char id[33];
     const char *result;
@@ -146,8 +148,10 @@ static void finish_pending(struct remote *r)
     if (!r->submitted) {
         struct track *track;
         rig_lock();
-        track = r->unload ? track_acquire_empty()
-            : track_acquire_by_import(r->deck->importer, r->pending_path);
+        if (!r->preparing)
+            r->preparing = r->unload ? track_acquire_empty()
+                : track_acquire_by_import(r->deck->importer, r->pending_path);
+        track = r->preparing;
         rig_unlock();
         if (!track) {
             r->result = "ERROR";
@@ -156,7 +160,27 @@ static void finish_pending(struct remote *r)
             r->pending_path = NULL;
             return;
         }
+        if (r->pending_streaming) {
+            int imported = __atomic_load_n(&track->import_result, __ATOMIC_ACQUIRE);
+            double decoded = (double)__atomic_load_n(&track->length,
+                __ATOMIC_ACQUIRE) / track->rate;
+            if (imported < 0 || (imported > 0
+                && fabs(decoded - r->pending_duration) > 1.0 / track->rate)) {
+                rig_lock();
+                track_release(track);
+                rig_unlock();
+                r->preparing = NULL;
+                r->result = "ERROR";
+                r->pending = false;
+                free(r->pending_path);
+                r->pending_path = NULL;
+                return;
+            }
+            if (imported == 0 && decoded < fmin(10.0, r->pending_duration))
+                return;
+        }
         remote_submit(pl, track, r->deck->protect);
+        r->preparing = NULL;
         r->submitted = true;
     }
     /* A dummy has no audio callback; only its stopped, no-audio state is applied
@@ -174,6 +198,8 @@ static void finish_pending(struct remote *r)
         r->track = pl->remote.incoming;
         free(r->path);
         r->path = r->pending_path;
+        r->streaming = r->pending_streaming && !r->unload;
+        r->total_duration = r->pending_duration;
         r->result = r->unload ? "OK" : "LOADED";
     } else {
         track_release(pl->remote.incoming);
@@ -204,12 +230,27 @@ static void status(struct remote *r)
         return;
     }
     int imported = __atomic_load_n(&r->track->import_result, __ATOMIC_ACQUIRE);
-    const char *state = !r->path ? "EMPTY" : imported == 0 ? "IMPORTING"
+    const char *state = !r->path ? "EMPTY" : imported == 0
+        ? (r->streaming ? "STREAMING" : "IMPORTING")
         : imported < 0 ? "ERROR" : "READY";
     const char *result = r->result;
     if (!strcmp(result, "LOADED"))
-        result = imported == 0 ? "PENDING" : imported < 0 ? "ERROR" : "OK";
-    int n = snprintf(line, sizeof line,
+        result = imported < 0 ? "ERROR" : imported == 0 && !r->streaming ? "PENDING" : "OK";
+    double decoded = (double)__atomic_load_n(&r->track->length,
+        __ATOMIC_ACQUIRE) / r->track->rate;
+    if (r->streaming && imported > 0
+        && fabs(decoded - r->total_duration) > 1.0 / r->track->rate) {
+        state = "ERROR";
+        result = "ERROR";
+    }
+    int n;
+    if (r->streaming)
+        n = snprintf(line, sizeof line,
+            "DVS2 STREAM_STATE %s %s %s %d %d %d %d %.6f %.6f %.6f %.6f %s\n",
+            r->id, result, state, fabs(s.pitch) > 0.01, r->deck->protect,
+            s.timecode_control, s.position_known, s.elapsed, r->total_duration,
+            s.pitch, decoded, r->path ? r->path : "");
+    else n = snprintf(line, sizeof line,
         "DVS2 STATE %s %s %s %d %d %d %d %.6f %.6f %.6f %s\n",
         r->id, result, state, fabs(s.pitch) > 0.01, r->deck->protect,
         s.timecode_control, s.position_known, s.elapsed,
@@ -221,14 +262,25 @@ static void status(struct remote *r)
         reply(r, line);
 }
 
-static void command(struct remote *r, char *args, bool unload)
+static void command(struct remote *r, char *args, bool unload, bool streaming)
 {
+    double duration = 0.0;
     char *path = strchr(args, ' ');
     if (path)
         *path++ = '\0';
     if (strlen(args) != 32 || strspn(args, "0123456789abcdef") != 32) {
         ack(r, "-", "INVALID");
         return;
+    }
+    if (streaming) {
+        char *end = NULL;
+        duration = path ? strtod(path, &end) : 0.0;
+        if (!path || end == path || *end != ' ' || !isfinite(duration)
+            || duration <= 0.0 || duration > 3600.0) {
+            ack(r, args, "INVALID");
+            return;
+        }
+        path = end + 1;
     }
     struct remote_snapshot s = remote_read(&r->deck->player);
     const char *result = "ACCEPTED";
@@ -237,7 +289,8 @@ static void command(struct remote *r, char *args, bool unload)
     else if (!r->deck->protect)
         result = "UNPROTECTED";
     else if (r->pending
-        || (r->path && __atomic_load_n(&r->track->import_result, __ATOMIC_ACQUIRE) == 0)
+        || (r->path && !r->streaming
+            && __atomic_load_n(&r->track->import_result, __ATOMIC_ACQUIRE) == 0)
         || !fresh(r, &s))
         result = "BUSY";
     else if (fabs(s.pitch) > 0.01)
@@ -252,6 +305,8 @@ static void command(struct remote *r, char *args, bool unload)
             r->pending_path = copy;
             r->pending = true;
             r->unload = unload;
+            r->pending_streaming = streaming;
+            r->pending_duration = duration;
         }
     }
     ack(r, args, result);
@@ -270,9 +325,11 @@ static void handle(struct remote *r, char *line)
             atomic_load_explicit(&r->deck->device.playback_xruns, memory_order_relaxed));
         reply(r, output);
     } else if (!strncmp(line, "DVS2 LOAD ", 10))
-        command(r, line + 10, false);
+        command(r, line + 10, false, false);
     else if (!strncmp(line, "DVS2 UNLOAD ", 12))
-        command(r, line + 12, true);
+        command(r, line + 12, true, false);
+    else if (!strncmp(line, "DVS2 STREAM ", 12))
+        command(r, line + 12, false, true);
     else
         reply(r, "DVS2 UNSUPPORTED\n");
 }
@@ -391,6 +448,11 @@ void remote_stop(struct remote *r)
         rig_lock();
         int result = atomic_load_explicit(&mail->result, memory_order_acquire);
         track_release(result == REMOTE_OK ? mail->retired : mail->incoming);
+        rig_unlock();
+    }
+    if (r->preparing) {
+        rig_lock();
+        track_release(r->preparing);
         rig_unlock();
     }
     disconnect(r);

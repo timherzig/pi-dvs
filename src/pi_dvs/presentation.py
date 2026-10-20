@@ -24,6 +24,7 @@ from pi_dvs.engine import DemoEngine, Engine
 from pi_dvs.jobs import JobKind, Jobs
 from pi_dvs.library import Library
 from pi_dvs.link.service import LinkService
+from pi_dvs.link.streams import PreparedAudio
 from pi_dvs.model import Status, Track
 from pi_dvs.rekordbox import import_library, prepare_audio
 from pi_dvs.rekordbox.records import ImportCancelled
@@ -144,7 +145,7 @@ class Controller(QObject):
         self._engine = engine
         self._link = link
         self._source_key = ""
-        self._pending_key = ""
+        self._requested_source = ""
         self._pending_import_generation = ""
         self._sources_revision = -1
         self._link_status = ""
@@ -205,7 +206,7 @@ class Controller(QObject):
                 (
                     i
                     for i, v in enumerate(self._link.sources.views())
-                    if v.media.key == self._source_key
+                    if v.media.key == (self._requested_source or self._source_key)
                 ),
                 -1,
             )
@@ -231,14 +232,17 @@ class Controller(QObject):
             view = link.sources.view(key)
         except KeyError:
             return
-        if view.media.cancelled.is_set():
-            self._set_notice(view.error or "USB disconnected")
-            return
-        self._pending_key = key
+        self._jobs.cancel(JobKind.IMPORT)
+        self._requested_source = key
         self._pending_import_generation = view.media.source_id
         self._pending_source = None
-        self._importing = True
+        self._importing = not view.media.cancelled.is_set()
         self.importingChanged.emit()
+        self.sourcesChanged.emit()
+        if not self._importing:
+            self._set_notice(f"{view.media.name} disconnected; waiting to reconnect")
+            return
+        self._set_notice(f"Reading {view.media.name}…")
         self._jobs.submit(JobKind.IMPORT, lambda event: link.catalog(key, event, refresh=refresh))
 
     @Property(QObject, constant=True)
@@ -312,6 +316,15 @@ class Controller(QObject):
     def importing(self) -> bool:
         return self._importing
 
+    @Property(bool, notify=importingChanged)
+    def canCancelImport(self) -> bool:
+        if self._importing:
+            return True
+        if not self._link or not self._requested_source:
+            return False
+        media = self._link.sources.view(self._requested_source).media
+        return media.cancelled.is_set() or media.source_id != self._library.source_id
+
     @Slot(str)
     def browseCategory(self, category: str) -> None:
         if category not in ("tracks", "playlists", "artists", "albums", "genres", "bpm", "keys"):
@@ -346,7 +359,7 @@ class Controller(QObject):
         selected = QUrl(url)
         root = Path(selected.toLocalFile() if selected.isLocalFile() else url)
         self._pending_source = (root, format_choice)
-        self._pending_key = ""
+        self._requested_source = ""
         self._pending_import_generation = ""
         self._importing = True
         self.importingChanged.emit()
@@ -365,8 +378,8 @@ class Controller(QObject):
 
     @Slot()
     def refreshExport(self) -> None:
-        if self._link and self._source_key:
-            self._open_source(self._source_key, refresh=True)
+        if self._link and (self._requested_source or self._source_key):
+            self._open_source(self._requested_source or self._source_key, refresh=True)
         elif self._source_root:
             self.openExport(str(self._source_root), self._format_choice)
 
@@ -381,8 +394,12 @@ class Controller(QObject):
     @Slot()
     def cancelImport(self) -> None:
         self._jobs.cancel(JobKind.IMPORT)
+        self._requested_source = ""
+        self._pending_import_generation = ""
         self._importing = False
         self.importingChanged.emit()
+        self.sourcesChanged.emit()
+        self._set_notice("Library selection cancelled")
 
     @Slot(object, object, str)
     def _completed(self, operation: JobKind, result: object, error: str) -> None:
@@ -420,6 +437,8 @@ class Controller(QObject):
                         self._set_notice("USB disconnected before its library was ready")
                         return
                     self._source_key = media.key
+                    self._requested_source = media.key
+                    self._pending_import_generation = media.source_id
                     self._source_root = media.root
                     self.sourcesChanged.emit()
                 self._library = result
@@ -430,6 +449,7 @@ class Controller(QObject):
                 self._set_notice(" ".join(result.warnings))
             else:
                 self._set_notice(error)
+            self.importingChanged.emit()
             return
         pending = self._preparing.pop(deck, None)
         if error:
@@ -441,13 +461,21 @@ class Controller(QObject):
                 self.decksChanged.emit()
                 return
             try:
-                self._engine.load(
-                    deck,
-                    replace(track, audio_path=result) if isinstance(result, Path) else track,
-                    generation=generation,
+                prepared = (
+                    replace(
+                        track,
+                        audio_path=result.path,
+                        duration=result.duration or track.duration,
+                        streaming=result.streaming,
+                    )
+                    if isinstance(result, PreparedAudio)
+                    else replace(track, audio_path=result)
+                    if isinstance(result, Path)
+                    else track
                 )
+                self._engine.load(deck, prepared, generation=generation)
                 if self._link:
-                    self._submitted[deck] = track
+                    self._submitted[deck] = prepared
                     self._pin_audio()
                 self._set_notice("")
             except ValueError as failure:
@@ -484,6 +512,15 @@ class Controller(QObject):
                 remaining=time_label(max(0, state.track.duration - state.position))
                 if state.track
                 else "00:00",
+                loadedProgress=max(
+                    0.0,
+                    min(1.0, state.buffered_duration / state.track.duration),
+                )
+                if state.track and state.track.duration and state.buffered_duration is not None
+                else 1.0
+                if state.track and state.status not in (Status.LOADING, Status.WAITING)
+                else 0.0,
+                downloadMessage=self._download_message(index),
                 progress=max(0.0, min(1.0, state.position / state.track.duration))
                 if state.track and state.track.duration
                 else 0.0,
@@ -498,6 +535,27 @@ class Controller(QObject):
             )
             for index, state in enumerate(self._engine.decks)
         ]
+
+    def _download_message(self, deck: int) -> str:
+        if self._link is None:
+            return ""
+        state = self._engine.decks[deck]
+        pending = self._preparing.get(deck)
+        track = pending[0] if pending else state.track
+        if track is None:
+            return ""
+        transfer = self._link.streams.state(track)
+        if transfer is None:
+            return ""
+        if transfer.error:
+            return transfer.error + " · Only buffered audio is available"
+        if transfer.status == "complete":
+            if state.status == Status.ERROR:
+                return "Downloaded · Audio decoding failed"
+            return "Fully downloaded" if state.download_complete else "Downloaded · Decoding audio"
+        percentage = int(100 * transfer.received / transfer.total) if transfer.total else 0
+        prefix = f"Downloading {track.title}" if pending else "Downloading"
+        return f"{prefix} · {percentage}%"
 
     @Slot(int, str)
     def loadTrack(self, deck: int, track_id: str) -> None:
@@ -525,7 +583,11 @@ class Controller(QObject):
                 link = self._link
                 self._jobs.submit(
                     JobKind.for_deck(deck),
-                    (lambda event: link.prepare(track, event))
+                    (
+                        (lambda event: link.prepare_progressive(track, event))
+                        if not self.isSimulation
+                        else (lambda event: link.prepare(track, event))
+                    )
                     if link
                     else (lambda event: prepare_audio(track)),
                 )
@@ -612,15 +674,27 @@ class Controller(QObject):
         if self._link:
             for deck, submitted in tuple(self._submitted.items()):
                 state = self._engine.decks[deck]
-                if (state.track and state.track.id == submitted.id) or (
-                    state.can_change_track and state.status not in (Status.WAITING, Status.LOADING)
+                if (state.track and state.track.audio_path == submitted.audio_path) or (
+                    not state.load_pending
+                    and state.status not in (Status.MISSING, Status.DISCONNECTED, Status.WAITING)
+                    and state.transport_message != "Engine state unavailable"
                 ):
                     self._submitted.pop(deck)
             tracks = tuple(s.track for s in self._engine.decks if s.track)
-            tracks += tuple(t for t, _ in self._preparing.values()) + tuple(
-                self._submitted.values()
+            tracks += tuple(self._submitted.values())
+            preparing = tuple(t for t, _ in self._preparing.values())
+            self._link.audio.protect(tracks + preparing)
+            self._link.streams.protect(
+                tracks,
+                preparing=tuple(t.id for t in preparing),
+                authoritative=all(
+                    not s.load_pending
+                    and s.status
+                    not in (Status.MISSING, Status.DISCONNECTED, Status.WAITING, Status.LOADING)
+                    and s.transport_message != "Engine state unavailable"
+                    for s in self._engine.decks
+                ),
             )
-            self._link.audio.protect(tracks)
 
     def _sync_sources(self) -> None:
         link = self._link
@@ -644,8 +718,12 @@ class Controller(QObject):
                 self.decksChanged.emit()
         if self._importing and self._pending_import_generation:
             if link.sources.media(self._pending_import_generation).cancelled.is_set():
-                self.cancelImport()
-                self._set_notice("USB disconnected while reading its library")
+                # Preserve the requested source for a new media generation;
+                # an explicit Cancel or another selection still abandons it.
+                self._jobs.cancel(JobKind.IMPORT)
+                self._importing = False
+                self.importingChanged.emit()
+                self._set_notice("USB disconnected while reading its library; waiting to reconnect")
         status = link.status
         if status != self._link_status:
             self._link_status = status
@@ -653,6 +731,7 @@ class Controller(QObject):
         if self._sources_revision != link.sources.revision:
             self._sources_revision = link.sources.revision
             self.sourcesChanged.emit()
+            self.importingChanged.emit()
             if self._source_key:
                 view = link.sources.view(self._source_key)
                 if view.media.cancelled.is_set():
@@ -674,8 +753,13 @@ class Controller(QObject):
                     )
                     self._refresh_browser()
                     self.libraryChanged.emit()
-                elif not self._importing and view.library is not self._library:
-                    self._open_source(self._source_key)
+            if self._requested_source and not self._importing:
+                wanted = link.sources.view(self._requested_source)
+                if (
+                    not wanted.media.cancelled.is_set()
+                    and wanted.media.source_id != self._pending_import_generation
+                ):
+                    self._open_source(self._requested_source)
         self._pin_audio()
         self._pin_covers()
 
@@ -683,6 +767,9 @@ class Controller(QObject):
         self._sync_sources()
         now = monotonic()
         elapsed, self._last_tick = now - self._last_tick, now
-        if self._engine.advance(elapsed):
+        if self._engine.advance(elapsed) or (
+            self._link
+            and (self._preparing or any(s.track and s.track.streaming for s in self._engine.decks))
+        ):
             self.decksChanged.emit()
         self._request_covers()

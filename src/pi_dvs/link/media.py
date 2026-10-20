@@ -173,8 +173,8 @@ class AudioCache:
     def materialize(
         self, track: Track, size: int, fetch: Callable[[Path], Download], cancelled: Cancel
     ) -> Path:
-        # The service serializes transfers; the cache lock only guards admission,
-        # eviction and pins, so the GUI can pin/unpin without waiting for I/O.
+        # The service serializes transfers. Only pin decisions take the GUI lock;
+        # filesystem scans, hashes and deletion stay on this worker.
         self.root.mkdir(parents=True, exist_ok=True)
         name = self.name(track)
         target = self.root / name
@@ -190,26 +190,45 @@ class AudioCache:
                 cancelled.check()
                 os.utime(target, None)
                 return target
-        with self.lock:
-            if target.exists():
+        if target.exists():
+            with self.lock:
                 if name in self._pinned and expected:
                     raise ImportFailure("Cached audio changed while a deck may be using it")
-                target.unlink()
-            entries = sorted(self.root.glob(".audio-*"), key=lambda p: p.stat().st_mtime_ns)
-            used = sum(p.stat().st_size for p in entries)
-            if size > self.limit:
-                raise ImportFailure("Track exceeds the audio cache capacity")
-            for path in entries:
-                if used + size <= self.limit:
-                    break
-                if path.name not in self._pinned:
-                    used -= path.stat().st_size
-                    path.unlink()
+            target.unlink()
+        entries = sorted(self.root.glob(".audio-*"), key=lambda p: p.stat().st_mtime_ns)
+        # Progressive prefixes may remain pinned by a separate native engine,
+        # including after app restart. Count their storage without counting a
+        # completed cache file's hardlink twice; never evict a live prefix.
+        sizes = {(p.stat().st_dev, p.stat().st_ino): p.stat().st_size for p in entries}
+        retained = set()
+        for partial in (self.root / ".streams").glob("*/audio.aiff"):
+            try:
+                stat = partial.stat()
+            except FileNotFoundError:
+                continue  # The stream janitor retired this unpinned session.
+            identity = (stat.st_dev, stat.st_ino)
+            sizes[identity] = stat.st_size
+            retained.add(identity)
+        used = sum(sizes.values())
+        if size > self.limit:
+            raise ImportFailure("Track exceeds the audio cache capacity")
+        for path in entries:
+            if used + size <= self.limit:
+                break
+            stat = path.stat()
+            with self.lock:
+                evict = path.name not in self._pinned and (stat.st_dev, stat.st_ino) not in retained
+                if evict:
+                    # Claim before unlinking. A new GUI request must go through
+                    # the serialized materializer before obtaining this file.
                     self._verified.pop(path.name, None)
-            if used + size > self.limit:
-                raise ImportFailure(
-                    "Audio cache is full; unload an unused deck or increase --link-cache-mib"
-                )
+            if evict:
+                used -= stat.st_size
+                path.unlink()
+        if used + size > self.limit:
+            raise ImportFailure(
+                "Audio cache is full; unload an unused deck or increase --link-cache-mib"
+            )
         result = fetch(target)
         if cancelled.is_set():
             target.unlink(missing_ok=True)

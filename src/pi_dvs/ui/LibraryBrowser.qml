@@ -100,7 +100,7 @@ ColumnLayout {
         ActionButton {
             objectName: "cancelImport"
             text: "Cancel"
-            visible: browser.controller.importing
+            visible: browser.controller.canCancelImport
             onClicked: browser.controller.cancelImport()
         }
     }

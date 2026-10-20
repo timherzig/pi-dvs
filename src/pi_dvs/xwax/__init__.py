@@ -44,7 +44,11 @@ class _Deck:
         if track is not None and (track.audio_path is None or not track.available):
             raise ValueError("Choose a real, available audio file for xwax")
         request_id = uuid4().hex
-        line = command_line(request_id, track.audio_path if track else None)
+        line = command_line(
+            request_id,
+            track.audio_path if track else None,
+            stream_duration=track.duration if track and track.streaming else None,
+        )
         with self.lock:
             if generation is not None and generation != self.generation:
                 raise ValueError("Engine reconnected; select the track again to load it")
@@ -52,7 +56,9 @@ class _Deck:
                 raise ValueError("Wait for a connected, stopped engine before changing tracks")
             self.request = Request(request_id, track, line)
             self.command_error = ""
-            self.state = replace(self.state, status=Status.WAITING, change_allowed=False, error="")
+            self.state = replace(
+                self.state, status=Status.WAITING, change_allowed=False, error="", load_pending=True
+            )
 
     def _publish(self, snapshot: Snapshot, error: str = "") -> None:
         with self.lock:
@@ -74,15 +80,25 @@ class _Deck:
                         duration=snapshot.duration,
                         audio_path=Path(snapshot.path),
                         source_id="xwax",
+                        streaming=snapshot.streaming,
                     )
-                if snapshot.state == "READY":
-                    track = replace(track, duration=snapshot.duration)
+                if snapshot.state == "READY" or snapshot.streaming:
+                    track = replace(track, duration=snapshot.duration, streaming=snapshot.streaming)
             status = {
                 "EMPTY": Status.EMPTY,
                 "IMPORTING": Status.LOADING,
+                "STREAMING": Status.PLAYING if snapshot.active else Status.READY,
                 "READY": Status.PLAYING if snapshot.active else Status.READY,
                 "ERROR": Status.ERROR,
             }[snapshot.state]
+            if (
+                snapshot.streaming
+                and snapshot.active
+                and snapshot.buffered_duration is not None
+                and snapshot.elapsed >= snapshot.buffered_duration
+                and snapshot.elapsed < snapshot.duration
+            ):
+                status = Status.BUFFERING
             if snapshot.result == "PENDING" and snapshot.state != "IMPORTING":
                 status = Status.WAITING
             if snapshot.result == "LOCKED":
@@ -98,8 +114,14 @@ class _Deck:
             ):
                 if snapshot.result == "OK":
                     expected = str(pending.track.audio_path) if pending.track else ""
-                    expected_state = "READY" if pending.track else "EMPTY"
-                    if snapshot.path != expected or snapshot.state != expected_state:
+                    expected_states = (
+                        {"READY", "STREAMING"}
+                        if pending.track and pending.track.streaming
+                        else {"READY"}
+                        if pending.track
+                        else {"EMPTY"}
+                    )
+                    if snapshot.path != expected or snapshot.state not in expected_states:
                         raise ProtocolError(
                             "Engine confirmation does not match the requested track"
                         )
@@ -131,6 +153,9 @@ class _Deck:
                 and not self.stop.is_set(),
                 transport_message=mode,
                 connection_generation=self.generation,
+                load_pending=self.request is not None or snapshot.result == "PENDING",
+                buffered_duration=snapshot.buffered_duration,
+                download_complete=not snapshot.streaming or snapshot.state == "READY",
             )
 
     def _session(self, connection: Connection) -> None:

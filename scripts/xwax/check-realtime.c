@@ -246,9 +246,9 @@ int main(int argc, char **argv)
     struct remote *remote = remote_start(&d, path, false);
     assert(remote);
     probe(&d, "control idle", NULL);
-    struct client normal = { .path = path, .stop = ATOMIC_VAR_INIT(false) };
+    struct client normal = { .path = path, .stop = false };
     probe(&d, "socket flood", &normal);
-    struct client stalled = { .path = path, .stalled = true, .stop = ATOMIC_VAR_INIT(false) };
+    struct client stalled = { .path = path, .stalled = true, .stop = false };
     probe(&d, "client not reading", &stalled);
     remote_stop(remote); /* No callback can run after this point. */
     rmdir(directory);

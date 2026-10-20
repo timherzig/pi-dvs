@@ -10,6 +10,7 @@ import secrets
 import socket
 import struct
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
@@ -256,6 +257,7 @@ class Client:
         max_bytes: int = 512 * 1024 * 1024,
         expected_sha256: str | None = None,
         expected_identity: tuple[int, ...] | None = None,
+        progress: Callable[[Path, FileInfo, int], None] | None = None,
     ) -> Download:
         self.deadline = time.monotonic() + 15
         temporary: Path | None = None
@@ -271,6 +273,7 @@ class Client:
             self.deadline = time.monotonic() + 15 + info.size / RATE * 2
             digest = hashlib.sha256()
             offset = 0
+            next_report = 0
             with NamedTemporaryFile(
                 dir=destination.parent, prefix=".partial-", delete=False
             ) as stream:
@@ -286,6 +289,10 @@ class Client:
                     stream.write(data)
                     digest.update(data)
                     offset += len(data)
+                    if progress is not None and (offset >= next_report or offset == info.size):
+                        stream.flush()
+                        progress(temporary, info, offset)
+                        next_report = offset + 64 * 1024
                 stream.flush()
                 os.fsync(stream.fileno())
             if self.lookup(path).identity != info.identity:
