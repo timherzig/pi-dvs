@@ -152,6 +152,16 @@ Rekordbox exports use `PIONEER/rekordbox/export.pdb`, while OneLibrary exports u
 `exportLibrary.db`; a generic SQLite fixture does not prove USB compatibility.
 See [the export format analysis](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html).
 
+## Hardware direction
+
+The Raspberry Pi is a candidate for the final appliance. Start hardware trials
+with the owned 2015 11-inch MacBook Air (i7/8 GB), which already runs Omarchy,
+using its built-in screen, keyboard and trackpad. This is a proposed test platform;
+PX5 routing, latency, sustained playback and unattended startup remain unverified.
+See the [hardware comparison and validation plan](docs/hardware.md) for owned-device
+assessment, dated complete purchase budgets, touchscreen alternatives, connection
+layouts and measurable acceptance targets.
+
 ## Next milestones
 
 The follow-up tickets include acceptance criteria and dependencies:
