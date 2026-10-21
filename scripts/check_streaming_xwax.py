@@ -5,6 +5,7 @@ import json
 import socket
 import struct
 import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
@@ -114,10 +115,22 @@ def check(binary: Path, importer: Path) -> None:
                     status(connection, "STREAMING")
                     write_state(descriptor.parent, len(data), "failed", "USB disconnected")
                     failed = status(connection, "ERROR")
-                    assert failed.result == "ERROR" and failed.buffered_duration == 0.25
+                    assert failed.result == "ERROR" and failed.buffered_duration == 0.25, failed
                     request = uuid4().hex
                     connection.command(request, command_line(request, None))
                     status(connection, "EMPTY")
+                    # Exit with a live producer/importer; Darwin must release
+                    # the sockets and audio resources without a forced kill.
+                    if sys.platform == "darwin":
+                        descriptor, data, offset = fixture(root / "shutdown", 12)
+                        prefix = offset + 44100 * 10 * 4
+                        (descriptor.parent / "audio.aiff").write_bytes(data[:prefix])
+                        write_state(descriptor.parent, prefix, "loading")
+                        request = uuid4().hex
+                        connection.command(
+                            request, command_line(request, descriptor, stream_duration=12)
+                        )
+                        status(connection, "STREAMING")
                 print(
                     "Native progressive import: early readiness, buffer growth, "
                     "final verification, "
@@ -129,6 +142,9 @@ def check(binary: Path, importer: Path) -> None:
             finally:
                 process.terminate()
                 process.wait(timeout=5)
+                if sys.platform == "darwin":
+                    assert process.returncode == 0, "Engine did not exit cleanly"
+                    assert not endpoint.exists(), "Engine left its socket behind"
 
 
 if __name__ == "__main__":

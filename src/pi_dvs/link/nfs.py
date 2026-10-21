@@ -11,12 +11,14 @@ import socket
 import struct
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from threading import Event
 from typing import Protocol
 
+from pi_dvs.link.scheduling import Requests
 from pi_dvs.rekordbox.records import ImportCancelled, ImportFailure
 
 RATE = 256 * 1024
@@ -112,6 +114,8 @@ class Client:
         timeout: float = 1.0,
         attempts: int = 3,
         interval: float = BLOCK / RATE,
+        requests: Requests | None = None,
+        catalog: bool = False,
     ) -> None:
         if timeout <= 0 or attempts < 1 or interval < 0:
             raise ValueError("Invalid transfer limits")
@@ -121,6 +125,7 @@ class Client:
         except OSError:
             self.socket.close()
             raise
+        self.requests, self.catalog = requests, catalog
         self.cancelled = cancelled or Event()
         self.timeout, self.attempts, self.interval = timeout, attempts, interval
         self.deadline = float("inf")
@@ -148,39 +153,47 @@ class Client:
         packet = words(xid, 0, 2, program, version, procedure, 1)
         packet += opaque(credential) + words(0, 0) + payload
         for attempt in range(self.attempts):
-            while time.monotonic() < self.next_send:
+            turn = (
+                self.requests.turn(self.check, self.interval, catalog=self.catalog)
+                if self.requests
+                else nullcontext()
+            )
+            with turn:
+                while self.requests is None and time.monotonic() < self.next_send:
+                    self.check()
+                    time.sleep(max(0.0, min(0.02, self.next_send - time.monotonic())))
                 self.check()
-                time.sleep(max(0.0, min(0.02, self.next_send - time.monotonic())))
-            self.check()
-            self.socket.sendto(packet, host)
-            self.next_send = time.monotonic() + self.interval
-            until = min(self.deadline, time.monotonic() + self.timeout)
-            while time.monotonic() < until:
-                self.check()
-                self.socket.settimeout(max(0.0001, min(0.1, until - time.monotonic())))
-                try:
-                    data, peer = self.socket.recvfrom(65536)
-                except TimeoutError:
-                    continue
-                if peer != host:
-                    continue
-                reader = Reader(data)
-                try:
-                    if reader.integer() != xid or reader.integer() != 1:
+                self.socket.sendto(packet, host)
+                if self.requests:
+                    self.requests.sent(self.interval, catalog=self.catalog)
+                self.next_send = time.monotonic() + self.interval
+                until = min(self.deadline, time.monotonic() + self.timeout)
+                while time.monotonic() < until:
+                    self.check()
+                    self.socket.settimeout(max(0.0001, min(0.1, until - time.monotonic())))
+                    try:
+                        data, peer = self.socket.recvfrom(65536)
+                    except TimeoutError:
                         continue
-                    accepted = reader.integer()
-                    if accepted:
-                        raise NfsError("RPC denied", accepted)
-                    reader.integer()  # verifier flavor
-                    reader.opaque(400)
-                    status = reader.integer()
-                except NfsError:
-                    raise
-                except ImportFailure:
-                    continue  # malformed datagrams do not consume the attempt
-                if status:
-                    raise NfsError("RPC rejected", status)
-                return reader.rest()
+                    if peer != host:
+                        continue
+                    reader = Reader(data)
+                    try:
+                        if reader.integer() != xid or reader.integer() != 1:
+                            continue
+                        accepted = reader.integer()
+                        if accepted:
+                            raise NfsError("RPC denied", accepted)
+                        reader.integer()  # verifier flavor
+                        reader.opaque(400)
+                        status = reader.integer()
+                    except NfsError:
+                        raise
+                    except ImportFailure:
+                        continue  # malformed datagrams do not consume the attempt
+                    if status:
+                        raise NfsError("RPC rejected", status)
+                    return reader.rest()
             if attempt + 1 < self.attempts:
                 self.retries += 1
         raise TimeoutError(f"CDJ did not reply after {self.attempts} attempts")
@@ -270,7 +283,10 @@ class Client:
                 raise ImportFailure(f"Invalid or excessive CDJ file size: {info.size}")
             if expected_identity is not None and info.identity != expected_identity:
                 raise ImportFailure("CDJ media changed before download")
-            self.deadline = time.monotonic() + 15 + info.size / RATE * 2
+            # Shared transfers retain a bounded budget at their minimum reserved rate.
+            divisor = (8 if self.catalog else 2) if self.requests else 1
+            budget_rate = RATE / divisor
+            self.deadline = time.monotonic() + 15 + info.size / budget_rate * 2
             digest = hashlib.sha256()
             offset = 0
             next_report = 0

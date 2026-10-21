@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fcntl.h>
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
@@ -129,7 +130,13 @@ static void reply(struct remote *r, const char *line)
 {
     size_t n = strlen(line);
     /* Nonblocking, bounded output. Never spin on a slow reader. */
-    if (send(r->client, line, n, MSG_NOSIGNAL) != (ssize_t)n)
+    if (send(r->client, line, n,
+#ifdef __APPLE__
+             0
+#else
+             MSG_NOSIGNAL
+#endif
+             ) != (ssize_t)n)
         disconnect(r);
 }
 
@@ -334,6 +341,29 @@ static void handle(struct remote *r, char *line)
         reply(r, "DVS2 UNSUPPORTED\n");
 }
 
+/* Darwin lacks atomic socket flags and accept4. CLOEXEC_DEFAULT on importer
+ * posix_spawn closes the fcntl race; SO_NOSIGPIPE is socket-local. */
+static int control_socket(int listener)
+{
+#ifdef __APPLE__
+    int fd = listener < 0 ? socket(AF_UNIX, SOCK_STREAM, 0) : accept(listener, NULL, NULL);
+    if (fd < 0) return -1;
+    int one = 1;
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1 ||
+        fcntl(fd, F_SETFL, O_NONBLOCK) == -1 ||
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one) == -1) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+#else
+    return listener < 0 ? socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)
+        : accept4(listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+#endif
+}
+
 static void *serve(void *argument)
 {
     struct remote *r = argument;
@@ -346,7 +376,7 @@ static void *serve(void *argument)
         if (poll(fds, 2, 10) < 0 && errno != EINTR)
             break;
         if (fds[0].revents & POLLIN) {
-            int client = accept4(r->listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            int client = control_socket(r->listener);
             if (client >= 0) {
                 disconnect(r);
                 r->client = client;
@@ -400,7 +430,7 @@ struct remote *remote_start(struct deck *deck, const char *path, bool dummy)
     strcpy(address.sun_path, path);
     atomic_init(&r->stop, false);
     r->last_audio = now();
-    r->listener = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    r->listener = control_socket(-1);
     if (r->listener == -1)
         goto failed;
     /* Never remove an existing/live socket. The owner removes stale sockets. */

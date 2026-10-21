@@ -304,7 +304,7 @@ def test_progressive_remote_audio_starts_early_and_usb_loss_never_completes_cach
                 sample_rate=44100,
                 bit_depth=16,
             )
-            link.streams.protect((track,), authoritative=True)
+            link.streams.protect((), authoritative=True, preparing=(track.id,))
             link.audio.protect((track,))
 
             def hold(path):
@@ -315,6 +315,8 @@ def test_progressive_remote_audio_starts_early_and_usb_loss_never_completes_cach
             peer.read_hook = hold
             prepared = link.prepare_progressive(track, Event())
             assert prepared.streaming and prepared.duration == 20
+            attached = replace(track, audio_path=prepared.path, streaming=True)
+            link.streams.protect((attached,), authoritative=True)
             assert paused.wait(1)
             assert not list(link.audio.root.glob(".audio-*"))
             assert read_object(prepared.path.parent / "state.json")["status"] == "loading"
@@ -330,3 +332,126 @@ def test_progressive_remote_audio_starts_early_and_usb_loss_never_completes_cach
         finally:
             release.set()
             link.close()
+
+
+def test_local_reconnect_retires_catalogs_but_preserves_loaded_cache(tmp_path):
+    usb = Path(shutil.copytree(FIXTURE, tmp_path / "USB"))
+    link = service(tmp_path)
+    first = link.import_local(usb, "pdb", Event())
+    link.accept_local(first.source_id)
+    track = first.search("cafe")[0]
+    link.audio.protect((track,))
+    cached = link.prepare(track, Event())
+    original = cached.read_bytes()
+    for _ in range(5):
+        usb.rename(tmp_path / "removed")
+        link._watch_local()
+        (tmp_path / "removed").rename(usb)
+        link._watch_local()
+        assert len(link._locals) == 1
+        assert not link._staged
+        assert cached.read_bytes() == original
+    assert not link.available(track)
+    current = link.sources.views()[0]
+    assert link.accept_local(current.media.source_id) is current.media
+    link.close()
+
+
+def test_cancelled_staged_catalogs_are_retired(tmp_path):
+    link = service(tmp_path)
+    cancelled = []
+    for _ in range(5):
+        event = Event()
+        library = link.import_local(FIXTURE, "pdb", event)
+        event.set()
+        cancelled.append(library.source_id)
+    # A new successful import collects abandoned preparations too.
+    fresh = link.import_local(FIXTURE, "pdb", Event())
+    link.accept_local(fresh.source_id)
+    assert len(link._locals) == 1
+    assert not link._staged
+    for source_id in cancelled:
+        with pytest.raises(ImportCancelled):
+            link.accept_local(source_id)
+    link.close()
+
+
+def test_uncached_catalog_opens_during_other_cdj_audio_download(tmp_path, monkeypatch):
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    started, release, opened = Event(), Event(), Event()
+    failures = []
+    with Peer(files=files) as peer:
+        patch_client(monkeypatch, peer)
+        original = Client.download
+
+        def paused_audio(client, path, *args, **kwargs):
+            if path != "/PIONEER/rekordbox/export.pdb":
+                started.set()
+                assert release.wait(3)
+            return original(client, path, *args, **kwargs)
+
+        monkeypatch.setattr(Client, "download", paused_audio)
+        link = service(tmp_path)
+        snapshot = message()
+        snapshot["players"].append(dict(snapshot["players"][0], number=2, mac=[6] * 6))
+        link.update_peers(snapshot, "test")
+        keys = [v.media.key for v in link.sources.views()]
+        track = link.catalog(keys[0], Event()).search("cafe")[0]
+
+        def audio():
+            try:
+                link.prepare(track, Event())
+            except Exception as error:
+                failures.append(error)
+
+        def catalog():
+            try:
+                assert link.catalog(keys[1], Event()).tracks
+                opened.set()
+            except Exception as error:
+                failures.append(error)
+
+        a, b = Thread(target=audio), Thread(target=catalog)
+        a.start()
+        assert started.wait(1)
+        b.start()
+        try:
+            assert opened.wait(1), "Other USB catalog waited for the whole audio download"
+            assert not release.is_set()
+        finally:
+            release.set()
+            a.join(3)
+            b.join(3)
+            link.close()
+        assert not a.is_alive() and not b.is_alive()
+        assert not failures
+
+
+def test_catalog_is_loadable_as_soon_as_it_is_published(tmp_path, monkeypatch):
+    files = {
+        "/" + p.relative_to(FIXTURE).as_posix(): p.read_bytes()
+        for p in FIXTURE.rglob("*")
+        if p.is_file()
+    }
+    with Peer(files=files) as peer:
+        patch_client(monkeypatch, peer)
+        link = service(tmp_path)
+        link.update_peers(message(), "test")
+        original = link.sources.publish
+        prepared = []
+
+        def publish(media, library):
+            original(media, library)
+            # Another caller can see the published library immediately.
+            track = library.search("cafe")[0]
+            prepared.append(link.prepare(track, Event()))
+
+        monkeypatch.setattr(link.sources, "publish", publish)
+        library = link.catalog(link.sources.views()[0].media.key, Event())
+        assert prepared[0].read_bytes() == files["/" + library.search("cafe")[0].relative_path]
+        assert link.available(library.tracks[0])
+        link.close()

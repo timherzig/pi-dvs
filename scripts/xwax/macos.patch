@@ -1,0 +1,265 @@
+--- a/Makefile
++++ b/Makefile
+@@ -81,6 +81,13 @@
+ 	tests/ttf
+ 
+ # Optional device types
++ifdef PORTAUDIO
++OBJS += portaudio-device.o
++DEVICE_CPPFLAGS += -DWITH_PORTAUDIO
++DEVICE_LIBS += $(shell pkg-config --libs portaudio-2.0) -liconv
++CPPFLAGS += -include macos-compat.h $(shell pkg-config --cflags portaudio-2.0)
++endif
++
+ 
+ ifdef ALSA
+ OBJS += alsa.o dicer.o midi.o
+--- a/xwax.c
++++ b/xwax.c
+@@ -26,6 +26,9 @@
+ #include <sys/mman.h> /* mlockall() */
+ 
+ #include "alsa.h"
++#ifdef WITH_PORTAUDIO
++#include "portaudio-device.h"
++#endif
+ #include "controller.h"
+ #include "device.h"
+ #include "dicer.h"
+@@ -102,7 +105,11 @@
+       "  --line              Line level signal (default)\n"
+       "  --phono             Tolerate cartridge level signal ('software pre-amp')\n"
+       "  --import <program>  Track importer (default '%s')\n"
+-      "  --dummy             Build a dummy deck with no audio device\n\n",
++      "  --dummy             Build a dummy deck with no audio device\n"
++#ifdef WITH_PORTAUDIO
++      "  --coreaudio NAME IN OUT  macOS device and zero-based stereo offsets\n"
++#endif
++      "\n",
+       DEFAULT_IMPORTER);
+ 
+ #ifdef WITH_OSS
+@@ -207,7 +214,7 @@
+ 
+     struct library library;
+ 
+-#if defined WITH_OSS || WITH_ALSA
++#if defined WITH_OSS || WITH_ALSA || WITH_PORTAUDIO
+     unsigned int rate;  /* or 0 for 'automatic' */
+ #endif
+ 
+@@ -215,7 +222,7 @@
+     int oss_buffers, oss_fragment;
+ #endif
+ 
+-#ifdef WITH_ALSA
++#if defined WITH_ALSA || WITH_PORTAUDIO
+     unsigned int alsa_buffer;
+ #endif
+ 
+@@ -257,12 +264,12 @@
+     phono = false;
+     use_mlock = false;
+ 
+-#if defined WITH_OSS || WITH_ALSA
++#if defined WITH_OSS || WITH_ALSA || WITH_PORTAUDIO
+     rate = 0; /* automatic */
+ #endif
+ 
+-#ifdef WITH_ALSA
+-    alsa_buffer = DEFAULT_ALSA_BUFFER;
++#if defined WITH_ALSA || WITH_PORTAUDIO
++    alsa_buffer = 512;
+ #endif
+ 
+ #ifdef WITH_OSS
+@@ -345,7 +352,7 @@
+             argc -= 2;
+ #endif
+ 
+-#if defined WITH_OSS || WITH_ALSA
++#if defined WITH_OSS || WITH_ALSA || WITH_PORTAUDIO
+         } else if (!strcmp(argv[0], "--rate") || !strcmp(argv[0], "-r")) {
+ 
+             if (!strcmp(argv[0], "-r"))
+@@ -373,7 +380,7 @@
+             argc -= 2;
+ #endif
+ 
+-#ifdef WITH_ALSA
++#if defined WITH_ALSA || WITH_PORTAUDIO
+         } else if (!strcmp(argv[0], "-m")) {
+             fprintf(stderr, "-m is no longer available, check the man page for --buffer in samples\n");
+             return -1;
+@@ -458,6 +465,19 @@
+                 return -1;
+             pending_socket = argv[1];
+             argv += 2; argc -= 2;
++#ifdef WITH_PORTAUDIO
++        } else if (!strcmp(argv[0], "--coreaudio")) {
++            if (argc < 4) {
++                fprintf(stderr, "--coreaudio requires exact device name, input offset and output offset\n");
++                return -1;
++            }
++            struct device *device = start_deck(argv[1]);
++            if (!device || coreaudio_init(device, argv[1], argv[2], argv[3], rate, alsa_buffer))
++                return -1;
++            commit_deck();
++            argv += 4;
++            argc -= 4;
++#endif
+         } else if (!strcmp(argv[0], "--dummy")) {
+ 
+             struct device *v;
+@@ -701,11 +721,26 @@
+     if (rt_start(&rt, priority) == -1)
+         return -1;
+ 
++#ifdef __APPLE__
++    if (use_mlock) {
++        fprintf(stderr, "--lock-ram/mlockall is not supported on macOS; do not infer Pi memory-lock coverage\n");
++        goto out_rt;
++    }
++#else
+     if (use_mlock && mlockall(MCL_CURRENT) == -1) {
+         perror("mlockall");
+         goto out_rt;
+     }
+ 
++#endif
++#ifdef WITH_PORTAUDIO
++    if (interface) {
++        fprintf(stderr, "The macOS build requires --no-interface; use the pi-dvs UI\n");
++        goto out_rt;
++    }
++    if (coreaudio_start() == -1)
++        goto out_rt;
++#endif
+     if (interface && interface_start(&library, geo, decor) == -1)
+         goto out_rt;
+ 
+--- a/external.c
++++ b/external.c
+@@ -27,6 +27,10 @@
+ #include <string.h>
+ #include <sys/types.h>
+ 
++#ifdef __APPLE__
++#include <spawn.h>
++extern char **environ;
++#endif
+ #include "debug.h"
+ #include "external.h"
+ 
+@@ -43,6 +47,24 @@
+ {
+     pid_t pid;
+ 
++#ifdef __APPLE__
++    posix_spawn_file_actions_t actions;
++    posix_spawnattr_t attrs;
++    int e = posix_spawn_file_actions_init(&actions);
++    if (e) { errno = e; return -1; }
++    e = posix_spawnattr_init(&attrs);
++    if (e) { posix_spawn_file_actions_destroy(&actions); errno = e; return -1; }
++    e = posix_spawnattr_setflags(&attrs, POSIX_SPAWN_CLOEXEC_DEFAULT);
++    if (!e) e = posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO);
++    if (!e) e = posix_spawn_file_actions_addinherit_np(&actions, STDERR_FILENO);
++    if (!e) e = posix_spawn_file_actions_addclose(&actions, pp[0]);
++    if (!e) e = posix_spawn_file_actions_adddup2(&actions, pp[1], STDOUT_FILENO);
++    if (!e && pp[1] != STDOUT_FILENO) e = posix_spawn_file_actions_addclose(&actions, pp[1]);
++    if (!e) e = posix_spawn(&pid, path, &actions, &attrs, argv, environ);
++    posix_spawnattr_destroy(&attrs);
++    posix_spawn_file_actions_destroy(&actions);
++    if (e) { errno = e; perror("posix_spawn"); return -1; }
++#else
+     pid = vfork();
+     if (pid == -1) {
+         perror("vfork");
+@@ -69,6 +91,7 @@
+         abort(); /* execv() does not return */
+     }
+ 
++    #endif
+     if (close(pp[1]) != 0)
+         abort();
+ 
+--- a/rig.c
++++ b/rig.c
+@@ -40,6 +40,21 @@
+ static struct list tracks = LIST_INIT(tracks),
+     excrates = LIST_INIT(excrates);
+ mutex lock;
++/* This file is patched only for the Darwin build. The async signal handler
++ * touches a lock-free atomic and a nonblocking self-pipe, never locks or stdio. */
++_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "signal flag must be lock-free");
++static atomic_bool stopping;
++static struct sigaction previous_int, previous_term;
++static void request_stop(int signal_number)
++{
++    int saved = errno;
++    atomic_store_explicit(&stopping, true, memory_order_relaxed);
++    char wake = EVENT_WAKE;
++    (void)signal_number;
++    (void)write(event[1], &wake, 1);
++    errno = saved;
++}
++
+ 
+ int rig_init()
+ {
+@@ -59,6 +74,19 @@
+         return -1;
+     }
+ 
++    if (fcntl(event[1], F_SETFL, O_NONBLOCK) == -1) {
++        close(event[0]); close(event[1]); return -1;
++    }
++    atomic_store_explicit(&stopping, false, memory_order_relaxed);
++    struct sigaction action = { .sa_handler = request_stop };
++    sigemptyset(&action.sa_mask);
++    if (sigaction(SIGINT, &action, &previous_int) == -1) {
++        close(event[0]); close(event[1]); return -1;
++    }
++    if (sigaction(SIGTERM, &action, &previous_term) == -1) {
++        sigaction(SIGINT, &previous_int, NULL);
++        close(event[0]); close(event[1]); return -1;
++    }
+     mutex_init(&lock);
+ 
+     return 0;
+@@ -66,6 +94,8 @@
+ 
+ void rig_clear()
+ {
++    sigaction(SIGINT, &previous_int, NULL);
++    sigaction(SIGTERM, &previous_term, NULL);
+     mutex_clear(&lock);
+ 
+     if (close(event[0]) == -1)
+@@ -126,7 +156,9 @@
+ 
+         mutex_unlock(&lock);
+ 
++        if (atomic_load_explicit(&stopping, memory_order_relaxed)) goto finish;
+         r = poll(pt, pe - pt, -1);
++        if (atomic_load_explicit(&stopping, memory_order_relaxed)) goto finish;
+         if (r == -1) {
+             if (errno == EINTR) {
+                 mutex_lock(&lock);
+@@ -189,6 +221,7 @@
+     rt_not_allowed();
+ 
+     if (write(event[1], &e, 1) == -1) {
++        if (errno == EAGAIN) return 0; /* A pending wake already exists. */
+         perror("write");
+         return -1;
+     }
+@@ -202,6 +235,7 @@
+ 
+ int rig_quit()
+ {
++    atomic_store_explicit(&stopping, true, memory_order_relaxed);
+     return post_event(EVENT_QUIT);
+ }
+ 

@@ -5,6 +5,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -116,6 +117,9 @@ def smoke(binary: Path, importer: Path) -> None:
                 until(lambda: engine.decks[0].status == Status.READY, "adopt ready deck")
                 process.terminate()
                 process.wait(timeout=5)
+                if sys.platform == "darwin":
+                    assert process.returncode == 0, "Engine did not exit cleanly"
+                    assert not any(endpoint.exists() for endpoint in endpoints)
                 until(
                     lambda: all(d.status == Status.DISCONNECTED for d in engine.decks), "disconnect"
                 )

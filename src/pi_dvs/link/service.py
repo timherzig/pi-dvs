@@ -21,6 +21,7 @@ from pi_dvs.link.covers import MAX_COVER_BYTES, CoverCancel, Covers
 from pi_dvs.link.media import AudioCache, CacheLease, Cancel, Media, Sources, relabel
 from pi_dvs.link.nfs import Client, Download
 from pi_dvs.link.power import prevent_idle_sleep
+from pi_dvs.link.scheduling import Requests
 from pi_dvs.link.streams import PreparedAudio, Progress, Streams
 from pi_dvs.model import Track
 from pi_dvs.rekordbox import MAX_DATABASE_BYTES, import_library, media_path
@@ -43,6 +44,7 @@ class LinkService:
         self.stop = Event()
         self._lock = RLock()
         self._transfers = Lock()
+        self._requests = Requests()
         self._status = "Starting Pro DJ Link…"
         self._address = ""
         self._last_report = 0.0
@@ -71,12 +73,13 @@ class LinkService:
             self._status = status
 
     @contextmanager
-    def _transfer(self, cancelled: Cancel) -> Iterator[None]:
+    def _transfer(self, cancelled: Cancel, *, progressive: bool = False) -> Iterator[None]:
         while not self._transfers.acquire(timeout=0.05):
             cancelled.check()
         try:
             cancelled.check()
-            yield
+            with self._requests.audio(progressive=progressive):
+                yield
         finally:
             self._transfers.release()
 
@@ -106,21 +109,45 @@ class LinkService:
         catalog["generation"] = int(media.source_id.removeprefix("link-")[:8], 16) & 0x7FFFFFFF
         with self._lock:
             Cancel(event, self.stop).check()
+            self._retire_local_catalogs()
             self._locals[media.source_id] = (root, choice, before, catalog)
             self._staged[media.source_id] = (media, library, event)
         return library
 
+    def _retire_local_catalogs(self) -> None:
+        """Called under _lock; cached deck audio does not own serving catalogs."""
+        for source_id, (media, _, event) in tuple(self._staged.items()):
+            if event.is_set() or media.cancelled.is_set():
+                del self._staged[source_id]
+        retained = {view.media.source_id for view in self.sources.views()}
+        retained.update(self._staged)
+        if self._selected_local:
+            retained.add(self._selected_local)
+        for source_id in tuple(self._locals):
+            if source_id not in retained:
+                del self._locals[source_id]
+
     def accept_local(self, source_id: str) -> Media:
         # No I/O here: called only after a Jobs/UI or guarded watcher acceptance.
         with self._lock:
-            media, library, event = self._staged[source_id]
-            Cancel(event, self.stop, media.cancelled).check()
-            self.sources.install(media, library)
+            pending = self._staged.get(source_id)
+            if pending is not None:
+                media, library, event = pending
+                Cancel(event, self.stop, media.cancelled).check()
+                self.sources.install(media, library)
+                del self._staged[source_id]
+            else:
+                try:
+                    media = self.sources.media(source_id)
+                except KeyError as error:
+                    raise ImportCancelled() from error
+                Cancel(self.stop, media.cancelled).check()
             if self._selected_local == source_id and self._command is not None:
                 return media
             self._selected_local = source_id
             self._command = self._locals[source_id][3]
             self._command_revision += 1
+            self._retire_local_catalogs()
             return media
 
     def accept_library(self, library: Library) -> Media:
@@ -150,23 +177,24 @@ class LinkService:
             return self.import_local(media.root, choice, event)
         if view.library is not None and not refresh:
             return view.library
-        with self._transfer(cancelled):
+        with self._lock:
+            address = self._address
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix="catalog-", dir=self.cache_root) as temp:
+            with Client(
+                address, cancelled=cancelled, requests=self._requests, catalog=True
+            ) as client:
+                client.mount(media.address)
+                path = Path(temp) / "export.pdb"
+                result = client.download(
+                    "/PIONEER/rekordbox/export.pdb", path, max_bytes=MAX_DATABASE_BYTES
+                )
+                library = remote_library(path.read_bytes(), media)
+            cancelled.check()
             with self._lock:
-                address = self._address
-            self.cache_root.mkdir(parents=True, exist_ok=True)
-            with TemporaryDirectory(prefix="catalog-", dir=self.cache_root) as temp:
-                with Client(address, cancelled=cancelled) as client:
-                    client.mount(media.address)
-                    path = Path(temp) / "export.pdb"
-                    result = client.download(
-                        "/PIONEER/rekordbox/export.pdb", path, max_bytes=MAX_DATABASE_BYTES
-                    )
-                    library = remote_library(path.read_bytes(), media)
-                cancelled.check()
-                self.sources.publish(media, library)
-                with self._lock:
-                    self._db_identity[media.source_id] = result.identity
-                return library
+                self._db_identity[media.source_id] = result.identity
+            self.sources.publish(media, library)
+            return library
 
     def available(self, track: Track) -> bool:
         try:
@@ -199,13 +227,13 @@ class LinkService:
         cancelled.check()
         if not track.available:
             raise ImportFailure(track.unavailable_reason)
-        with self._transfer(cancelled):
+        with self._transfer(cancelled, progressive=progress is not None):
             if media.root:
                 return self._local_audio(track, media, cancelled)
             with self._lock:
                 address = self._address
                 identity = self._db_identity.get(media.source_id)
-            with Client(address, cancelled=cancelled) as client:
+            with Client(address, cancelled=cancelled, requests=self._requests) as client:
                 client.mount(media.address)
                 database = client.lookup("/PIONEER/rekordbox/export.pdb")
                 if identity is None or database.identity != identity:
@@ -256,7 +284,9 @@ class LinkService:
                             with self._lock:
                                 address = self._address
                                 identity = self._db_identity.get(media.source_id)
-                            with Client(address, cancelled=bounded) as client:
+                            with Client(
+                                address, cancelled=bounded, requests=self._requests
+                            ) as client:
                                 client.mount(media.address)
                                 if (
                                     client.lookup("/PIONEER/rekordbox/export.pdb").identity
@@ -290,6 +320,7 @@ class LinkService:
         assert media.root is not None
         root = media.root
         with self._lock:
+            cancelled.check()
             expected = self._locals[media.source_id][2]
         if local_token(root) != expected:
             self.sources.disconnect(media.key, expected=media)
@@ -428,6 +459,7 @@ class LinkService:
 
     def _watch_local(self) -> None:
         with self._lock:
+            self._retire_local_catalogs()
             selected = self._selected_local
             local = self._locals.get(selected or "")
         if not selected or not local:

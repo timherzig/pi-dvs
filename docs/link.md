@@ -7,7 +7,8 @@ The optional Link adapter supports both directions on a wired DJ network:
 - Share the selected, mounted local Rekordbox USB with CDJs through the separate
   `pi-dvs-link` helper. CDJs play the original audio from that USB.
 
-The desktop transport is still silent unless connected to the Linux xwax engine.
+The desktop transport is silent unless connected to the native xwax engine
+(Linux/ALSA on the Pi, or the optional macOS/Core Audio development backend).
 Sharing to physical CDJs produces audio on the CDJs, independently of that engine.
 
 ## Build and run
@@ -47,12 +48,24 @@ load a compatible track and press **PLAY**.
 ## Transfers, cache and media changes
 
 CDJ reads use NFSv2 with the CDJ UTF-16 filename dialect. There is one outstanding
-request and one transfer at a time across both deck loads and catalog imports.
-READ blocks are 1,280 bytes, paced at a ceiling of 256 KiB/s; retries use the same
+request at a time across all clients. Audio/cache materialization remains serialized,
+but an uncached library can interleave requests between audio reads instead of
+waiting for the entire track download. During full-file audio preparation, catalog reads can use half of the paced
+request budget. AIFF transfers attempted in progressive mode use at most one eighth
+to protect audio that may already be playing; unsupported AIFF layouts retain this
+conservative reservation while falling back to full-file loading. They regain the full budget afterward. Transfer deadlines account for their minimum reserved rates. READ blocks are 1,280 bytes, paced at a ceiling of 256 KiB/s; retries use the same
 transaction ID and also obey pacing. Per-request retries and whole-operation
 limits prevent indefinite network waits. A 2.46 MB MP3 took about 11 seconds in
 the original two-player hardware trial. Larger files take proportionally longer;
 supported AIFF files can start playing while this retrieval continues.
+
+On the Mac/CDJ-900 hardware setup, opening the second CDJ's uncached library
+while downloading a long MP3 from the first took 12.2 seconds after correcting
+scheduler wake-ups, versus 62.8 seconds before that correction. The library
+became browsable before the audio download finished. This verifies interleaving
+on that setup, not instantaneous imports or Raspberry Pi throughput. MP3 files
+still download completely before xwax loads them.
+
 
 With the current xwax build, 44.1 kHz, stereo, 16-bit PCM AIFF loads after ten
 seconds of audio have been decoded (or the whole audio portion for a shorter
@@ -60,7 +73,10 @@ track). At the conservative download pace this normally takes about seven to ten
 seconds plus catalog/network overhead. No lossy conversion is introduced: the
 importer preserves the PCM sample values and changes only byte order for xwax.
 Other formats/layouts retain complete-file loading. Downloads remain serialized;
-a second new track waits while the first transfer finishes.
+a second new track waits while the first transfer finishes. Source-library reads
+can progress during that wait; this does not promise instant catalog loading.
+Superseded local serving catalogs are retired on reconnect while cached deck
+audio remains protected.
 
 The deck timeline shows decoded, playable audio separately from the playhead;
 the percentage text reports bytes downloaded. The total duration stays fixed.

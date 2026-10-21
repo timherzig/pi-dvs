@@ -168,3 +168,27 @@ def test_whole_transfer_deadline_cannot_be_reset_by_slow_successes(tmp_path, mon
             client.download("/song", tmp_path / "audio")
         assert len(peer.reads) < 10
         assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("catalog, divisor", [(True, 8), (False, 2)])
+def test_shared_deadline_allows_reserved_bandwidth(tmp_path, catalog, divisor):
+    from pi_dvs.link.nfs import RATE
+    from pi_dvs.link.scheduling import Requests
+
+    requests = Requests()
+    data = b"catalog" * 150000
+    with (
+        requests.audio(),
+        Peer(data=data) as peer,
+        Client("127.0.0.1", interval=0, requests=requests, catalog=catalog) as client,
+    ):
+        client.mount("127.0.0.1", peer.port)
+        budgets = []
+
+        def progress(path, info, received):
+            budgets.append(client.deadline - time.monotonic())
+
+        target = tmp_path / "export.pdb"
+        client.download("/PIONEER/rekordbox/export.pdb", target, progress=progress)
+        assert budgets[0] >= 15 + len(data) / (RATE / divisor) * 2 - 1
+        assert target.read_bytes() == data
