@@ -85,22 +85,27 @@ def test_pacing_size_limits_and_paths(tmp_path):
 
 
 def test_cancellation_interrupts_a_silent_receive(tmp_path):
-    from threading import Timer
+    from concurrent.futures import ThreadPoolExecutor
 
     event = Event()
-    with Peer(fault="timeout") as peer, Client("127.0.0.1", cancelled=event) as client:
+    with (
+        Peer(fault="timeout") as peer,
+        Client("127.0.0.1", cancelled=event, timeout=5, attempts=1) as client,
+    ):
         client.mount("127.0.0.1", peer.port)
-        timer = Timer(0.03, event.set)
-        timer.start()
-        started = time.monotonic()
-        try:
-            with pytest.raises(ImportCancelled):
-                client.download("/song", tmp_path / "audio")
-            assert time.monotonic() - started < 0.4
-            assert len(peer.reads) == 1
-            assert not list(tmp_path.iterdir())
-        finally:
-            timer.cancel()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            pending = worker.submit(client.download, "/song", tmp_path / "audio")
+            try:
+                # Cancel only after READ reaches the deliberately silent peer.
+                # A short timer can otherwise fire during lookup on a busy host.
+                assert peer.read_received.wait(5)
+                event.set()
+                with pytest.raises(ImportCancelled):
+                    pending.result(timeout=2)
+                assert len(peer.reads) == 1
+                assert not list(tmp_path.iterdir())
+            finally:
+                event.set()
 
 
 def test_final_lookup_and_destination_creation_races_do_not_publish(tmp_path):

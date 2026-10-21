@@ -2,9 +2,10 @@ name: Checks
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,12 +16,15 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify (${{ matrix.os }}, Python ${{ matrix.python }})
+    name: Libraries and app (${{ matrix.os }}, Python ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04]
-        python: ['3.12', '3.13']
+        include:
+          - os: ubuntu-24.04-arm
+            python: '3.12'
+          - os: macos-14
+            python: '3.13'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
@@ -41,18 +45,26 @@ jobs:
       - run: uv sync --locked --all-groups
       - name: Repository hygiene
         run: uv run --locked pre-commit run --all-files --hook-stage manual
-      - run: make check
-      - run: make package
+      - name: Formatting, lint, types and locked dependencies
+        run: |
+          make lint typecheck
+          uv lock --check
+      - name: Read-only USBs, remote CDJ sources and two-deck application behavior
+        run: uv run --locked pytest -v --junitxml=test-results.xml
+      - name: Install and open the packaged application
+        run: make package
       - name: Keep coverage report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.python }}
-          path: coverage.xml
+          path: |
+            coverage.xml
+            test-results.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Keep tested distributions
-        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.12'
+        if: matrix.os == 'ubuntu-24.04-arm' && matrix.python == '3.12'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: distributions
@@ -65,15 +77,20 @@ jobs:
           retention-days: 14
 
   xwax-smoke:
-    name: Pinned xwax (Linux)
-    runs-on: ubuntu-24.04
+    name: Two-deck xwax (Linux ARM64)
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make xwax-smoke
+      - name: Install native engine build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libsdl2-dev libsdl2-ttf-dev libasound2-dev ffmpeg curl ca-certificates patch python3
+      - name: Render audio, load both decks and recover interrupted streams
+        run: make xwax-linux-smoke
 
   xwax-macos-smoke:
-    name: Pinned xwax (macOS)
+    name: Two-deck xwax (macOS development)
     runs-on: macos-14
     timeout-minutes: 20
     steps:
@@ -86,12 +103,13 @@ jobs:
       - run: make xwax-macos-smoke
 
   link-test:
-    name: Pro DJ Link helper (loopback)
-    runs-on: ubuntu-24.04
+    name: Serve read-only music to CDJ clients (Linux ARM64)
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make link-test
+      - name: Concurrent CDJ clients browse and read original audio over loopback
+        run: make link-test
 
   quality-gate:
     name: Quality gate
@@ -100,7 +118,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Require every platform to pass
+      - name: Require application, two-deck engine and CDJ serving checks
         env:
           RESULT: ${{ needs.verify.result }}
           ENGINE_RESULT: ${{ needs.xwax-smoke.result }}
