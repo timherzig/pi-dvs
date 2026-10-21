@@ -74,6 +74,13 @@ silent simulation and can connect to a separately built xwax engine; it does not
 establish production audio-appliance readiness. Automatic Raspberry Pi deployment,
 health checks, and service rollback will be added with the hardware/boot milestone.
 
+## Appliance implementation reference
+
+For #7, see [PiDeck startup and deployment lessons](pideck-reference.md#startup-and-deployment--7).
+Use its separation of soundcard setup and launch configuration as precedent, with
+owned services and bounded recovery. Its old image and broad process-killing
+launcher are not deployment instructions for this project.
+
 ## GitHub repository policy
 
 The versioned desired ruleset is `.github/rulesets/main.json`: pull requests,

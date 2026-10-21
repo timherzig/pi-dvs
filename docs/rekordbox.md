@@ -6,6 +6,11 @@ volume name, a local rekordbox installation, an XML export, or a desktop
 `master.db`. The optional [Pro DJ Link adapter](link.md) adds remote USB retrieval,
 local serving and source lifecycle handling; OS mounting remains separate.
 
+For the mounting/discovery work in #6/#18, see
+[PiDeck USB lifecycle lessons](pideck-reference.md#guest-usb-lifecycle--6-and-18).
+Its read-only automount/rescan flow is useful precedent; keep source identity,
+recovery and mounting outside this parser.
+
 ## Supported exports
 
 | Export | Reader | Behavior |

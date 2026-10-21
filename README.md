@@ -154,13 +154,20 @@ See [the export format analysis](https://djl-analysis.deepsymmetry.org/rekordbox
 
 ## Hardware direction
 
-The Raspberry Pi is a candidate for the final appliance. Start hardware trials
-with the owned 2015 11-inch MacBook Air (i7/8 GB), which already runs Omarchy,
-using its built-in screen, keyboard and trackpad. This is a proposed test platform;
-PX5 routing, latency, sustained playback and unattended startup remain unverified.
+The preferred final appliance is a Raspberry Pi behind a roughly 7-inch touchscreen,
+with a printed enclosure and two accessible guest USB sockets. See the
+[compact Pi research](docs/compact-pi-appliance.md) for used-board and display options,
+incremental costs and the required plug-and-play workflow. The owned 2015 11-inch
+MacBook Air (i7/8 GB, Omarchy) has provided initial audible PX5/DVS test evidence
+in [#8](https://github.com/timherzig/pi-dvs/issues/8). Those runs do not establish
+Pi performance, complete two-turntable reliability or unattended appliance startup.
 See the [hardware comparison and validation plan](docs/hardware.md) for owned-device
 assessment, dated complete purchase budgets, touchscreen alternatives, connection
 layouts and measurable acceptance targets.
+
+PiDeck provides implementation precedent for compact xwax appliances. See the
+[PiDeck reference](docs/pideck-reference.md) for pinned audio-routing, USB, touch
+and startup sources, their limitations and the related implementation work.
 
 ## Next milestones
 

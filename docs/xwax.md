@@ -253,6 +253,12 @@ count ALSA's reported `EPIPE` recoveries; zero counters do not prove inaudibilit
 correct routing or low latency. `DVS2 UNSUPPORTED` rejects other commands,
 including digital `PLAY`.
 
+## Related Pi implementation
+
+[PiDeck audio and realtime setup](pideck-reference.md#audio-routing-and-realtime-setup--4)
+provides multideck ALSA routing precedent. Its historical device/buffer settings
+are references, not PX5 defaults; retain our pinned engine/control extension.
+
 ## Verification and hardware measurements
 
 ```sh
