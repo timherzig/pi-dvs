@@ -66,6 +66,7 @@ def test_early_result_keeps_producer_owned_until_confirmed_retirement(tmp_path):
         importer.join(2)
         assert not importer.is_alive()
         assert len(output.getvalue()) == len(pcm)
+        assert session.finished.wait(2)
         assert streams.state(track).status == "complete"
         streams.protect((attached,), authoritative=False)
         time.sleep(0.1)
@@ -172,7 +173,9 @@ def test_blocked_retirement_does_not_block_gui_and_missing_deck_does_not_keep_pr
     waiter.start()
     try:
         assert job_started.wait(1)
-        session = streams.sessions[track.id]
+        # fetch starts inside session construction, before dictionary publication.
+        with streams.lock:
+            session = streams.sessions[track.id]
         # The awaiting GUI job is cancelled; another deck is still missing.
         wait_cancelled.set()
         waiter.join(1)

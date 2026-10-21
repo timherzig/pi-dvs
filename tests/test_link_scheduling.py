@@ -89,25 +89,23 @@ def test_paused_sender_still_paces_the_following_wire_request():
         assert time.monotonic() - sent_at >= 0.019
 
 
-def test_full_file_sharing_does_not_idle_between_eligible_requests():
+def test_full_file_sharing_does_not_idle_between_eligible_requests(monkeypatch):
     requests = Requests()
-    counts = [0, 0]
-    deadline = time.monotonic() + 1
+    now = 0.0
+    waits = []
 
-    def work(catalog):
-        while time.monotonic() < deadline:
-            with requests.turn(lambda: None, 0.005, catalog=catalog):
-                requests.sent(0.005, catalog=catalog)
-                time.sleep(0.0005)
-                counts[int(catalog)] += 1
+    def wait(timeout):
+        nonlocal now
+        waits.append(timeout)
+        now += timeout
 
+    monkeypatch.setattr("pi_dvs.link.scheduling.time.monotonic", lambda: now)
+    monkeypatch.setattr(requests._condition, "wait", wait)
     with requests.audio():
-        threads = [Thread(target=work, args=(catalog,)) for catalog in (False, True)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(3)
-    assert all(not thread.is_alive() for thread in threads)
-    # Leave ample scheduling headroom below the 200 requests/second ceiling.
-    assert sum(counts) >= 100, counts
-    assert min(counts) >= 30, counts
+        with requests.turn(lambda: None, 0.005, catalog=True):
+            requests.sent(0.005, catalog=True)
+        # The wire is free but this catalog's quota expires after the wire pace.
+        # No worker notification will arrive: both deadlines must wake us.
+        with requests.turn(lambda: None, 0.005, catalog=True):
+            assert now == pytest.approx(0.010)
+    assert waits == pytest.approx([0.005, 0.005])
