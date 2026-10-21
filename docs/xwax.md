@@ -1,7 +1,8 @@
 # Optional xwax connection
 
 The default desktop transport is a silent simulation. Real mode connects to two
-Unix sockets owned by a separately started Linux engine. GUI and engine must see
+Unix sockets owned by a separately started native engine. Linux/ALSA remains the Raspberry Pi 4/5 target;
+macOS has an optional development backend using PortAudio/Core Audio. GUI and engine must see
 the same audio paths. This integration does not manage processes, restore tracks
 automatically or provide a Mac-to-Pi network bridge.
 
@@ -21,7 +22,7 @@ Unmodified upstream and Waxcode binaries do not implement the `DVS2` contract.
 
 On Ubuntu 24.04, dependencies are `build-essential`, `pkg-config`, `libsdl2-dev`,
 `libsdl2-ttf-dev`, `libasound2-dev`, `ffmpeg`, `curl`, CA certificates, `patch`,
-and Python 3 for the smoke. SDL remains a link dependency even in headless mode.
+and Python 3 for the progressive importer and smoke. SDL remains a link dependency even in headless mode.
 No new Python runtime dependency is required.
 
 ```sh
@@ -71,6 +72,67 @@ playback or timecode decoding. For real audio, native ALSA devices replace the
 dummies. PX5 channel mapping, realtime privileges, RAM locking, buffer sizes and
 physical Serato vinyl behavior need hardware validation. `--rtprio 0` is for the
 hardware-free smoke, not a tuned performance configuration.
+
+## macOS development with the PX5
+
+The macOS backend runs the same xwax player, Serato timecoder, progressive
+importer and DVS2 contract. Only device I/O and OS compatibility differ. The
+Linux build still uses ALSA, does not apply `macos.patch`, and does not require
+PortAudio. Mac tests do not qualify the Raspberry Pi 4/5 for performance use.
+
+Install the separate native build dependencies, then build into a new directory:
+
+```sh
+brew install pkgconf sdl2 sdl2_ttf portaudio ffmpeg
+sh scripts/xwax/build.sh "$PWD/build/xwax-macos"
+mkdir -p "$HOME/.cache/pi-dvs"
+chmod 700 "$HOME/.cache/pi-dvs"
+build/xwax-macos/xwax --no-interface --rtprio 0 --protect \
+  --rate 44100 --buffer 512 --line --timecode serato_2b --33 \
+  --import "$PWD/build/xwax-macos/import" \
+  --socket "$HOME/.cache/pi-dvs/a.sock" --coreaudio 'XONE:PX5' 0 0 \
+  --socket "$HOME/.cache/pi-dvs/b.sock" --coreaudio 'XONE:PX5' 6 6
+```
+
+The two numbers following the exact device name are zero-based **stereo input
+and output offsets**, so `6 6` uses USB channels 7/8 for PX5 channel 4. Both decks
+share one full-duplex stream, rate and buffer size. Overlapping stereo pairs,
+missing/ambiguous names and unsupported configurations fail; there is no fallback
+to the Mac speakers or microphone. Unassigned outputs are silent. Keep the PX5
+channel's rear USB SND at PH for phono timecode and its top selector at USB.
+
+Launch the normal app with the two socket paths, optionally adding `--library`
+and Link arguments from [link.md](link.md). macOS may require audio-input access
+for the launching application. The native SDL interface is disabled on macOS;
+use the pi-dvs window. Core Audio manages the audio callback's scheduling;
+`--rtprio 0` here is not a recommendation for ALSA. `--lock-ram` is explicitly
+unsupported on macOS; no Pi memory-lock guarantee is inferred. Use SIGINT or
+SIGTERM for shutdown before restarting or replacing the engine. Each host
+shutdown stage has a five-second watchdog. A stuck Stop/Close or Terminate
+operation exits the whole native process with status 75, without freeing memory
+that a callback might still use. This is a failed shutdown, not a clean exit; it
+contains the observed Core Audio deadlock rather than claiming to cure it. After
+a failed exit, verify the old process is gone and use fresh socket paths when
+restarting (do not remove sockets belonging to a running engine).
+
+The callback deinterleaves selected inputs into bounded stereo blocks, runs the
+native timecoder/player, and scatters the result into the selected outputs. It
+performs no allocation, logging, socket I/O or waiting. It records PortAudio
+input/output discontinuity flags in DVS2 METRICS; these are host callback flags,
+not ALSA EPIPE counts or proof of audible loss. Reported input/output latencies
+at startup come from the host API; measure physical round-trip/vinyl response
+separately. Device loss must not be treated as automatic, safe playback recovery.
+
+`make xwax-macos-smoke` builds in a temporary directory and runs the fake-host
+channel/lifecycle tests with sanitizers, guarded native decoder/player probes,
+and real subprocess/socket/progressive tests. No audio hardware is opened. The
+Darwin probe instruments production sources with the same forbidden-call wrappers
+used by the Linux linker probe. The fake-host tests cover channel isolation,
+unused/empty output silence, varied callback sizes, missing input, invalid maps,
+shared-stream ownership, immediate startup callbacks, an in-flight callback during
+stop failure, and close-before-teardown. A second test drives the real backend
+callback through the guarded native decoder/player and protected handoff. Spawn
+checks cover diagnostic separation, closed stdout and unrelated descriptor leaks.
 
 ## Confirmed state and native transport
 
@@ -139,6 +201,7 @@ Only these newline-terminated UTF-8 commands are supported:
 
 ```text
 DVS2 LOAD <32 lowercase hex request ID> <absolute path>
+DVS2 STREAM <32 lowercase hex request ID> <total seconds> <absolute descriptor path>
 DVS2 UNLOAD <32 lowercase hex request ID>
 DVS2 STATUS
 DVS2 METRICS
@@ -164,6 +227,24 @@ with an empty path. A request's ID/result survive reconnect, not engine restart.
 A rejected ACK does not overwrite an in-flight request. A matching ID, final
 result and expected track/empty state confirm the command, including same-path
 loads. The client never retries an uncertain mutation.
+
+Progressive STREAM loads use a private `.pidvs-stream` descriptor and the bundled
+standard-library Python AIFF importer. Supported input is stereo 16-bit PCM at
+44.1 kHz. The control thread keeps the previous track until at least ten seconds
+(or a shorter track's full duration) have decoded, then requests the same
+motion-protected callback handoff as LOAD. Streaming decks report:
+
+```text
+DVS2 STREAM_STATE <id|-> <result> <state> <active> <protected> <timecodeControl> <positionKnown> <elapsed> <total duration> <pitch> <decoded duration> <path>
+```
+
+`STREAMING` confirms early attachment; `READY` requires successful final import
+and matching decoded duration. A failed/truncated import reports `ERROR`, even
+when it emitted PCM first. The importer waits at temporary EOF outside the audio
+callback; its producer timeout is bounded. A stopped streaming deck may be
+unloaded or replaced. Total duration never follows the growing buffer. The
+progressive smoke checks early attachment, growing prefixes, short tracks,
+stopped unload and terminal source failure against the actual native binary.
 
 `DVS2 STALE` disables app mutations when real audio callbacks stop advancing for
 500 ms. Dummy devices explicitly bypass that check. `DVS2 METRICS` replies with
@@ -223,3 +304,53 @@ PY
 Docker/dummy/probe results establish software behavior only. No physical PX5
 latency, underrun rate, vinyl fidelity or Raspberry Pi performance is established
 without that hardware run.
+
+
+### Mac/PX5 development check (2026-10-21)
+
+On an Apple Silicon Mac running macOS 26.1, the Core Audio backend at 44.1 kHz
+and 512 frames played a local AIFF (2:32) and a CDJ-USB-sourced MP3 (5:38)
+through PX5 channel 4 using Serato vinyl control. The listener confirmed both
+tracks were clear and continuous through their normal ends; both decks recorded
+zero input/output underruns. Only deck B was playing; deck A remained empty.
+
+This establishes a single-deck development check, not measured physical latency,
+dual-vinyl operation, long-session reliability or Raspberry Pi acceptance.
+Cue/reset handling remains pending: moving the needle before the current track
+origin can produce a negative elapsed time and silence until zero. The earlier
+Linux Air output underrun still needs separate investigation.
+
+A further two-source run played Kent's “400 slag” from CDJ 2 USB on deck B
+for its full 4:59 while “0356” by Viewtiful Joe downloaded from CDJ 1 USB
+and became Ready on deck A. The listener confirmed uninterrupted, clear
+playback through the end; both decks retained zero input/output underruns.
+Deck A was loaded but not playing, so this does not establish dual-deck audio.
+
+A private fixed-speed transport harness also exercised both xwax decks at once:
+Angel on PX5 USB channel 1 and vinyl-controlled 400 slag on USB channel 4,
+with the two CDJs playing their own USBs through LINE channels 2 and 3. The
+listener confirmed four clear, correctly routed sources through both software
+track endings. Both software decks recorded zero capture/output underruns.
+This validates the four-channel arrangement with one simulated turntable; it
+does not validate two independent timecode inputs or instrument-measured crosstalk.
+
+After that run, the test engine hung stopping its Core Audio stream; a stack
+sample showed PortAudio/Core Audio stop paths waiting on mutexes. The stopped
+test process required termination before the normal engine was restored.
+Shutdown reliability remains open despite the successful playback run. The
+private transport commands are not present in the normal build.
+
+After adding shutdown containment, six real PX5 startup/load/shutdown cycles
+completed with exit status 0 in approximately 0.28–0.30 seconds each, removed
+both sockets and recorded zero input/output underruns. These were stopped-deck
+cycles, not six new listening runs. Subprocess tests separately force Stop,
+Close and Terminate to hang and verify bounded nonzero exit, including a blocked
+stderr. The underlying host deadlock can still occur; status 75 reports it.
+
+
+A subsequent full 2:32 Mii playback through PX5 channel 4 was confirmed clear
+and continuous by listening, with zero input/output underruns on both decks.
+After stopping the platter and lowering the faders, the GUI exited with status 0
+in 0.18 seconds and the engine with status 0 in 0.30 seconds; both sockets were
+removed. Restart brought both decks back empty, stopped and at zero underruns.
+This adds a post-playback shutdown check, not a long-term host-deadlock guarantee.

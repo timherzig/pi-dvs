@@ -146,8 +146,14 @@ static void *flood(void *arg)
     while (!atomic_load(&c->stop)) {
         ssize_t n = send(fd, query, sizeof query - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (n != sizeof query - 1) {
-            if (c->stalled && (errno == EAGAIN || errno == EPIPE))
+            /* A non-reading peer fills the socket buffers. Darwin may report
+             * ENOBUFS instead of EAGAIN; a short write is also backpressure. */
+            if (c->stalled && (n >= 0 || errno == EAGAIN || errno == EWOULDBLOCK ||
+                              errno == ENOBUFS || errno == EPIPE || errno == ECONNRESET))
                 break;
+            if (n < 0 && errno == EINTR)
+                continue;
+            fprintf(stderr, "status flood send failed: bytes=%zd errno=%d\n", n, errno);
             assert(false);
         }
         if (!c->stalled) {
@@ -246,9 +252,9 @@ int main(int argc, char **argv)
     struct remote *remote = remote_start(&d, path, false);
     assert(remote);
     probe(&d, "control idle", NULL);
-    struct client normal = { .path = path, .stop = ATOMIC_VAR_INIT(false) };
+    struct client normal = { .path = path, .stop = false };
     probe(&d, "socket flood", &normal);
-    struct client stalled = { .path = path, .stalled = true, .stop = ATOMIC_VAR_INIT(false) };
+    struct client stalled = { .path = path, .stalled = true, .stop = false };
     probe(&d, "client not reading", &stalled);
     remote_stop(remote); /* No callback can run after this point. */
     rmdir(directory);

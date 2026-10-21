@@ -1,0 +1,8 @@
+pi-dvs-link is a separate GPL-2.0-or-later program. It links the rbxport crates
+by Chris Le, pinned at 7fb4dad3f88a2cc0cecec0e718b4dde408fd7448.
+Upstream: https://github.com/chrisle/rbxport
+Helper and compatibility patches: Copyright (C) 2026 Tim Herzig.
+The borrowed input builder derives from upstream rbl-index/src/testing.rs.
+COPYING contains the GNU GPL v2 text. This helper and its dependency source
+must accompany any binary distribution under the applicable GPL terms.
+No helper binary or GPL implementation is included in the Python wheel.

@@ -17,6 +17,11 @@ class ExportTrack:
     genre: str = ""
     key: str = ""
     bpm: float = 0.0
+    analysis_path: str = ""
+    artwork_path: str = ""
+    sample_rate: int = 0
+    bitrate: int = 0
+    bit_depth: int = 0
 
 
 @dataclass(frozen=True)

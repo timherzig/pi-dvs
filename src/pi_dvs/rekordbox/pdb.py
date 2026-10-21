@@ -20,7 +20,9 @@ def _page_row_offsets(page: bytes) -> list[int]:
     # The next 11 bits count live rows, not allocated offsets. Deleted slots
     # remain in the directory. See Deep Symmetry's Table Page Header analysis.
     count = struct.unpack_from("<H", page, 24)[0] & 0x1FFF
-    heap_end = len(page) - ((count + 15) // 16) * 36
+    # Each allocated row adds a two-byte pointer; each group adds two masks.
+    # The final partial group does not reserve pointers for nonexistent rows.
+    heap_end = len(page) - count * 2 - ((count + 15) // 16) * 4
     if heap_end < 40:
         raise ImportFailure("Invalid PDB row directory")
     offsets = []
@@ -121,6 +123,10 @@ def read_pdb(data: bytes) -> Export:
                 genre=genres.get(t.genre_id, ""),
                 key=keys.get(t.key_id, ""),
                 bpm=float(t.tempo) / 100,
+                analysis_path=str(t.analyze_path),
+                sample_rate=int(t.sample_rate),
+                bitrate=int(t.bitrate),
+                bit_depth=int(t.sample_depth),
             )
             for t in db.tracks
         )

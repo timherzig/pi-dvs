@@ -1,0 +1,23 @@
+[package]
+name = "pi-dvs-link"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+publish = false
+
+[dependencies]
+rbl-link = { path = "build/rbxport/crates/rbl-link" }
+rbl-index = { path = "build/rbxport/crates/rbl-index" }
+rbl-nfs = { path = "build/rbxport/crates/rbl-nfs" }
+rbl-db = { path = "build/rbxport/crates/rbl-db" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+rbl-fakecdj = { path = "build/rbxport/crates/rbl-fakecdj" }
+rbl-dbserver = { path = "build/rbxport/crates/rbl-dbserver" }
+tempfile = "3"
+
+[profile.dev.package."*"]
+opt-level = 2

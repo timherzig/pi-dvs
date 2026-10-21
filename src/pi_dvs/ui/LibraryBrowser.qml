@@ -30,6 +30,27 @@ ColumnLayout {
     }
     RowLayout {
         Layout.fillWidth: true
+        visible: browser.controller.linkEnabled
+        ComboBox {
+            objectName: "sourceSelector"
+            Layout.preferredWidth: 270
+            textRole: "name"
+            valueRole: "key"
+            model: browser.controller.sources
+            currentIndex: browser.controller.selectedSourceIndex
+            Accessible.name: "Music source"
+            onActivated: browser.controller.selectSource(currentValue)
+        }
+        Text {
+            text: browser.controller.linkStatus
+            color: "#a9b8c3"
+            Layout.fillWidth: true
+            elide: Text.ElideRight
+            font.pixelSize: 12
+        }
+    }
+    RowLayout {
+        Layout.fillWidth: true
         spacing: 10
         ActionButton {
             objectName: "openExport"
@@ -38,6 +59,7 @@ ColumnLayout {
         }
         ComboBox {
             id: formatSelector
+            enabled: !browser.controller.linkEnabled || browser.controller.localSource
             objectName: "formatSelector"
             Layout.preferredWidth: 155
             palette.button: "#242b30"
@@ -78,7 +100,7 @@ ColumnLayout {
         ActionButton {
             objectName: "cancelImport"
             text: "Cancel"
-            visible: browser.controller.importing
+            visible: browser.controller.canCancelImport
             onClicked: browser.controller.cancelImport()
         }
     }

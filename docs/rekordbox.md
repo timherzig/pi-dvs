@@ -3,7 +3,8 @@
 Select an already-mounted media root containing `PIONEER/rekordbox`. The library
 reader never mounts drives or writes to source media. It does not depend on the
 volume name, a local rekordbox installation, an XML export, or a desktop
-`master.db`. USB hotplug belongs to issue #6; real audio belongs to #3.
+`master.db`. The optional [Pro DJ Link adapter](link.md) adds remote USB retrieval,
+local serving and source lifecycle handling; OS mounting remains separate.
 
 ## Supported exports
 
@@ -17,7 +18,7 @@ The PDB dependency is pinned to commit
 `ee3bac2f22ca11a5ce61eea35f8cb951c246eaef` via a hash-locked source archive.
 Before parsing, the application validates page sizes, page ownership, table
 chains and row offsets, including cyclic and out-of-file links. Local adapters
-handle the far-name album variant and the full 13-bit allocated-row count absent
+handle the far-name album variant and the full 13-bit allocated-row count and partial final row group absent
 from that dependency revision. Parsing and preflight use the same row-directory
 decoder, including live rows beyond slot 511.
 
@@ -61,9 +62,9 @@ Covers are limited to 8 MiB encoded and 16,777,216 pixels decoded, then named by
 content hash, with atomic publication and asynchronous QML loading. A placeholder
 is used when neither candidate is usable. The cache can be
 removed while the app is closed; it is rebuilt on import. Cache quota/eviction
-for future network media is part of #8.
+for network audio is handled by the [Link cache](link.md).
 
-## Lifecycle and future DJ Link
+## Lifecycle and Pro DJ Link
 
 Importing uses immutable catalog snapshots and request generations. Cancellation
 or a newer selection prevents stale publication; failures leave the current
@@ -75,12 +76,11 @@ Track identity combines the source root and database revision with the export
 track ID. A different export that reuses IDs cannot accidentally select an old
 track. This is a mounted-source identity, not a universal USB serial number.
 
-Mount/discovery policy and source removal notification remain outside the parser
-(#6). The future DJ Link adapter can keep original export IDs and relative paths,
-retrieve audio into a Pi-local cache, then hand a confirmed local path to xwax.
-It must supply remote source identity and media-generation invalidation. Both
-CDJ-hosted retrieval and Pi-hosted serving remain #8 work; this importer does not
-claim hardware compatibility with any CDJ/XDJ or implement discovery/NFS serving.
+The parser stays independent of network discovery and OS mounting. The optional
+[Link service](link.md) adds CDJ source discovery, media generations, paced retrieval
+to a protected host cache, and serving through a separate GPL helper. Loaded decks
+retain cached audio while new loads from disconnected media are cancelled. Without
+Link enabled, the local-only importer retains its existing manual refresh behavior.
 
 ## Verification
 

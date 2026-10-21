@@ -44,6 +44,8 @@ fail_under = 85
 show_missing = true
 
 [tool.mypy]
+# The separately built helper has a pinned third-party source checkout here.
+exclude = ["^scripts/link/build/"]
 files = ["src", "scripts", "tests/fixtures/build_exports.py"]
 python_version = "3.12"
 strict = true

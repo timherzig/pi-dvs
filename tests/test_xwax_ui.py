@@ -94,3 +94,116 @@ def test_late_usb_preflight_cannot_load_into_a_reconnected_engine(app, pair, tmp
     finally:
         release.set()
         controller.close()
+
+
+def test_progressive_timeline_and_rejected_incoming_load_preserve_current_track(
+    app, pair, tmp_path, monkeypatch
+):
+    from pi_dvs.library import Library
+    from pi_dvs.link.service import LinkService
+    from pi_dvs.model import Status, Track
+    from pi_dvs.presentation import Controller
+
+    engine, (server, _) = pair
+    old = Track("old", "Current", "", 120, audio_path=tmp_path / "old.aiff")
+    new = Track(
+        "old", "Incoming", "", 120, audio_path=tmp_path / "new.pidvs-stream", streaming=True
+    )
+    link = LinkService("test", tmp_path / "helper", tmp_path / "cache")
+    monkeypatch.setattr(link, "start", lambda: None)
+    controller = Controller(Library((old,), source_id="usb"), engine, link=link)
+    try:
+        engine.load(0, old)
+        until(lambda: engine.decks[0].status == Status.READY)
+        server.auto = False
+        engine.load(0, new)
+        controller._submitted[0] = new
+        until(lambda: server.state.result == "PENDING")
+        request = server.state.request_id
+        controller._pin_audio()
+        assert controller._submitted[0].audio_path == new.audio_path
+        # Vinyl began moving before the handoff; native protection rejects it.
+        server.override = (
+            f"DVS2 STATE {request} LOCKED READY 1 1 1 1 20 120 1 {old.audio_path}\n"
+        ).encode()
+        until(lambda: not engine.decks[0].load_pending)
+        controller._pin_audio()
+        assert 0 not in controller._submitted
+        assert engine.decks[0].track.id == old.id
+        assert engine.decks[0].status == Status.PLAYING
+        # A native progressive snapshot reports total and playable duration separately.
+        server.override = (
+            f"DVS2 STREAM_STATE {request} OK STREAMING 1 1 1 1 20 120 1 30 {old.audio_path}\n"
+        ).encode()
+        until(lambda: engine.decks[0].buffered_duration == 30)
+        card = controller.decks[0]
+        assert card["loadedProgress"] == 0.25
+        assert card["progress"] == 20 / 120
+        assert card["remaining"] == "01:40"
+    finally:
+        controller.close()
+
+
+def test_reconnect_pending_handoff_keeps_orphan_until_native_resolves(
+    app, pair, tmp_path, monkeypatch
+):
+    from pi_dvs.library import Library
+    from pi_dvs.link.service import LinkService
+    from pi_dvs.presentation import Controller
+
+    engine, (server, _) = pair
+    link = LinkService("test", tmp_path / "helper", tmp_path / "cache")
+    monkeypatch.setattr(link, "start", lambda: None)
+    orphan = link.streams.root / "prior-app"
+    orphan.mkdir(parents=True)
+    descriptor = orphan / "track.pidvs-stream"
+    descriptor.touch()
+    server.override = b"DVS2 STATE - PENDING EMPTY 0 1 1 0 0 0 0 \n"
+    until(lambda: engine.decks[0].load_pending)
+    controller = Controller(Library(()), engine, link=link)
+    try:
+        controller._pin_audio()
+        QTest.qWait(300)
+        assert descriptor.exists()
+        server.override = b"DVS2 STATE - ERROR EMPTY 0 1 1 0 0 0 0 \n"
+        until(lambda: not engine.decks[0].load_pending)
+        controller._pin_audio()
+        until(lambda: not descriptor.exists())
+    finally:
+        controller.close()
+
+
+def test_real_qml_shows_playable_prefix_separately_from_playhead(app):
+    with TemporaryDirectory(prefix="dvs-ui-", dir="/tmp") as directory:
+        servers = [Server(Path(directory) / name) for name in ("a", "b")]
+        qml, controller = create_window(sockets=tuple(s.path for s in servers))
+        try:
+            window = qml.rootObjects()[0]
+            servers[
+                0
+            ].override = (
+                b"DVS2 STREAM_STATE - OK STREAMING 1 1 1 1 20 120 1 30 /tmp/stream.pidvs-stream\n"
+            )
+            until(lambda: controller.decks[0]["loadedProgress"] == 0.25)
+            timeline = _item(window, "timelineA")
+            loaded = _item(window, "loadedAudioA")
+            # Native state arrives before the GUI's 100 ms notification tick.
+            # Assert the actual rendered binding instead of sleeping 50 ms.
+            until(lambda: abs(loaded.width() - timeline.width() * 0.25) < 1)
+            servers[
+                0
+            ].override = (
+                b"DVS2 STREAM_STATE - OK STREAMING 1 1 1 1 20 120 1 60 /tmp/stream.pidvs-stream\n"
+            )
+            until(lambda: controller.decks[0]["loadedProgress"] == 0.5)
+            until(lambda: abs(loaded.width() - timeline.width() * 0.5) < 1)
+            assert controller.decks[0]["progress"] == 20 / 120
+        finally:
+            controller.close()
+            for window in qml.rootObjects():
+                window.close()
+            qml.deleteLater()
+            controller.deleteLater()
+            QTest.qWait(20)
+            for server in servers:
+                server.close()

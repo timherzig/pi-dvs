@@ -72,10 +72,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make xwax-smoke
 
+  xwax-macos-smoke:
+    name: Pinned xwax (macOS)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.12'
+      - run: brew install pkgconf sdl2 sdl2_ttf portaudio ffmpeg
+      - run: uv sync --locked --all-groups
+      - run: make xwax-macos-smoke
+
+  link-test:
+    name: Pro DJ Link helper (loopback)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make link-test
+
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [verify, xwax-smoke]
+    needs: [verify, xwax-smoke, xwax-macos-smoke, link-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -83,4 +104,6 @@ jobs:
         env:
           RESULT: ${{ needs.verify.result }}
           ENGINE_RESULT: ${{ needs.xwax-smoke.result }}
-        run: test "$RESULT" = success && test "$ENGINE_RESULT" = success
+          MAC_ENGINE_RESULT: ${{ needs.xwax-macos-smoke.result }}
+          LINK_RESULT: ${{ needs.link-test.result }}
+        run: test "$RESULT" = success && test "$ENGINE_RESULT" = success && test "$LINK_RESULT" = success && test "$MAC_ENGINE_RESULT" = success

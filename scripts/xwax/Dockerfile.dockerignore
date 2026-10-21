@@ -1,0 +1,7 @@
+**
+!scripts/
+!scripts/xwax/
+!scripts/xwax/**
+!src/
+!src/pi_dvs/
+!src/pi_dvs/stream_audio.py

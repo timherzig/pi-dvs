@@ -17,14 +17,21 @@ class JobKind(Enum):
     IMPORT = (None, 2)
     DECK_A = (0, 1)
     DECK_B = (1, 1)
+    COVER_A = (0, 1, True)
+    COVER_B = (1, 1, True)
 
-    def __init__(self, deck: int | None, workers: int) -> None:
+    def __init__(self, deck: int | None, workers: int, cover: bool = False) -> None:
         self.deck = deck
         self.workers = workers
+        self.cover = cover
 
     @classmethod
     def for_deck(cls, deck: int) -> "JobKind":
         return {0: cls.DECK_A, 1: cls.DECK_B}[deck]
+
+    @classmethod
+    def for_cover(cls, deck: int) -> "JobKind":
+        return {0: cls.COVER_A, 1: cls.COVER_B}[deck]
 
 
 class Jobs(QObject):

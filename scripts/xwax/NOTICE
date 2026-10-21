@@ -6,4 +6,7 @@ pi-dvs patch and remote extension: Copyright (C) 2026 Tim Herzig
 The engine, patch and native extension are licensed under GNU GPL version 3.
 See COPYING. No engine source or binary is included in the pi-dvs Python wheel.
 The extension adds headless control and confirmed state to upstream xwax.
-Timecode decoding, native resampling and audio buffering remain upstream's.
+Timecode decoding and native resampling remain upstream's. The optional macOS
+PortAudio/Core Audio adapter supplies device buffering; Linux retains ALSA.
+PortAudio is a separately installed MIT-licensed library: https://www.portaudio.com/
+The Python wheel includes neither backend binary nor PortAudio.
