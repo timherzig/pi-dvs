@@ -231,7 +231,11 @@ def test_job_boundary_reports_errors_and_ignores_closed_results(app, caplog):
 
 
 @pytest.mark.parametrize("deck, key", [(0, Qt.Key.Key_1), (1, Qt.Key.Key_2)])
-def test_keyboard_load_uses_displayed_track_before_any_browsing(app, deck, key):
+@pytest.mark.parametrize("load_seconds", [0.35, 0.6])
+def test_keyboard_load_uses_displayed_track_before_any_browsing(
+    app, monkeypatch, deck, key, load_seconds
+):
+    monkeypatch.setattr(DemoEngine, "LOAD_SECONDS", load_seconds)
     engine, controller = create_window()
     try:
         window = engine.rootObjects()[0]
@@ -247,7 +251,7 @@ def test_keyboard_load_uses_displayed_track_before_any_browsing(app, deck, key):
         track_list.setProperty("currentIndex", selected_row)
         track_list.forceActiveFocus()
         QTest.keyClick(window, key, Qt.KeyboardModifier.ControlModifier)
-        QTest.qWait(450)
+        until(lambda: controller.decks[deck]["status"] == "Ready")
         assert controller.decks[deck]["title"] == "Tidal Memory"
         assert controller.decks[deck]["status"] == "Ready"
         assert controller.decks[1 - deck]["status"] == "Empty"
