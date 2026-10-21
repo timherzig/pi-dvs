@@ -4,7 +4,23 @@ Research date: **20 October 2026**. Scope:
 [#19](https://github.com/timherzig/pi-dvs/issues/19).
 Market: Germany/EU, prices in EUR unless explicitly marked otherwise.
 
-## Recommendation and evidence status
+## Direction update — 21 October 2026
+
+The preferred final appliance is now a **Pi directly behind a roughly 7-inch
+touchscreen**, in a user-printed enclosure with two guest USB sockets. The user
+already owns microSD storage, an Ethernet switch and Ethernet cables. See the
+[compact Pi research and incremental budget](compact-pi-appliance.md) for used
+boards, Chinese screens, enclosure planning and the plug-and-play software work.
+That update supersedes the final-device purchase ranking below; the older complete
+budgets remain comparison snapshots. The Omarchy Air remains useful for free
+initial audio trials, rather than the intended final appliance.
+
+[PiDeck implementation evidence](pideck-reference.md#hardware-inference) strengthens
+the case for testing a Pi 4 Model B with 4 GB: it documents Pi 3 use and includes
+explicit two-deck configurations. Pi 5 is headroom, not a proven minimum. The full
+PX5/library/Link workload still needs measurement; no Pi performance pass is implied.
+
+## Original recommendation and evidence status
 
 **Test the owned 2015 11-inch MacBook Air, i7/8 GB, on its existing Omarchy
 installation first.** Use its screen, keyboard and trackpad. The user confirmed

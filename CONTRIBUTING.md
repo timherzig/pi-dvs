@@ -56,6 +56,13 @@ Use deterministic engine tests for transitions and real offscreen QML controls
 for UI integration. Add a regression test for a reproduced bug. Hardware tests
 remain a separate requirement for hardware-dependent features.
 
+The intended appliance target is a Raspberry Pi 4 Model B with 4 GB RAM; passing
+host CI is not proof of target-device playback. Prefer tests of observable behavior
+and synchronization on events/state over fixed sleeps or tight wall-clock limits.
+Use generous bounded waits to catch hangs. Keep synthetic timing measurements
+informational unless they enforce a documented requirement; establish audio
+reliability with the real Pi/PX5 workload rather than generic runner performance.
+
 The coverage floor in `pyproject.toml` applies to all application code; it is a
 regression guard, not a substitute for useful assertions. Avoid lowering it or
 excluding code merely to pass CI.
@@ -63,8 +70,9 @@ excluding code merely to pass CI.
 Run `make package` for resource, dependency, packaging, or release changes. It
 builds both distributions using the locked backend, installs the wheel and locked
 runtime dependencies into a fresh environment, opens the QML window, checks demo
-assets, and writes checksums. CI runs this on both supported Python versions on
-macOS and Linux. It does not establish macOS 13 or Raspberry Pi hardware support;
+assets, and writes checksums. CI uses Linux ARM64 / Python 3.12 and macOS / Python 3.13, with the
+workflow coverage and physical four-deck acceptance checklist in
+[releasing](docs/releasing.md#continuous-integration). It does not establish macOS 13 or Raspberry Pi hardware support;
 minimum-OS and real-device validation need manual runs.
 
 See [releasing](docs/releasing.md) for development/production separation, release

@@ -6,18 +6,41 @@ version tags from `main`, not a separately maintained production branch.
 
 ## Continuous integration
 
-`.github/workflows/checks.yml` tests Python 3.12 and 3.13 on macOS and Ubuntu.
-A separate required Linux job builds the pinned, patched xwax binary and runs
-`make xwax-smoke` with dummy decks; it does not establish hardware compatibility.
-A macOS native job runs `make xwax-macos-smoke` with fake-host routing checks
-and dummy/progressive engine tests; it does not open audio hardware. Both native
-jobs are required by the quality gate. A separate Linux job runs `make link-test` against loopback CDJ clients using the
-pinned Rust helper and dependency patch. The Python wheel excludes that GPL
-executable; helper distribution needs the corresponding source and notices.
-Every Python/platform combination checks repository hygiene, formatting, lint, strict types,
-behavior tests, branch coverage, lock consistency, and installation of the built
-wheel with its resources. Linux installs Qt's EGL/OpenGL libraries for headless
-tests. One stable `Quality gate` check reports the whole matrix for branch rules.
+CI runs once per PR, on pushes to `main`, on manual dispatch, and as part of a
+release. `.github/workflows/checks.yml` focuses on these appliance workflows:
+
+| Required check | What it establishes |
+| --- | --- |
+| Libraries and app: Linux ARM64 / Python 3.12 | Read-only Device Library and OneLibrary imports, playlists and paths; remote CDJ catalog/audio reads; removal, cancellation and reconnection; two-deck loading/protection and offscreen QML. Full suite with branch coverage, lint/types and installed-wheel smoke. |
+| Libraries and app: macOS / Python 3.13 | The same behaviors on the development platform and the other supported Python version. |
+| Two-deck xwax: Linux ARM64 | Build the pinned engine natively; exercise audio rendering guards, two actual imports, progressive streaming, failure/recovery and reconnect using dummy decks. |
+| Two-deck xwax: macOS | The same engine probes plus fake-host CoreAudio routing checks for development. |
+| Serve read-only music to CDJ clients: Linux ARM64 | Build the pinned Rust helper; concurrent loopback CDJ clients browse and read original files, including file-handle, retry and read-budget regressions. |
+
+Guest USBs remain read-only: serving music means reading original bytes over the
+network, never editing the Rekordbox database, playlists or audio. Python tests use
+independent fixtures and loopback peers; native engine tests use synthetic audio.
+These checks cover the component paths, not a single end-to-end physical DJ setup.
+The Python wheel excludes the GPL helper; distribution needs its source and notices.
+
+ARM64 runners check the target architecture and dependencies, **not Pi 4 speed,
+4 GB memory limits or audible playback**. Two xwax decks plus two CDJs means four
+playback decks in the system: the CDJs decode their own audio, not two additional
+xwax decks. Before claiming appliance readiness, run the following on the actual
+Pi 4B / 4 GB with the PX5 and two CDJs:
+
+1. Mount a guest Rekordbox USB read-only; browse playlists and load both xwax decks.
+2. Browse a CDJ-attached USB and load its tracks into both xwax decks.
+3. Play both DVS decks while both CDJs browse/load/play music served by the Pi.
+4. Exercise source switching, USB removal, network loss and recovery while another
+   deck plays. Confirm playback protection and unchanged guest media.
+5. Record the build, duration, formats, audio buffer settings, XRUNs, listening
+   result, peak memory and temperature/throttling. Include sustained playback and
+   repeated loads; passing hosted CI cannot replace this run.
+
+Linux jobs install Qt's EGL/OpenGL libraries for headless tests. One stable
+`Quality gate` check requires every job above. Tested distributions from Linux
+ARM64 retain the `distributions` artifact name used by the release workflow.
 
 Actions and hooks are pinned to commit SHAs; Dependabot proposes weekly dependency
 and action updates. Keep version comments alongside action pins. Updates need the
@@ -73,6 +96,13 @@ update an installation in place during a set. The Python artifact defaults to
 silent simulation and can connect to a separately built xwax engine; it does not
 establish production audio-appliance readiness. Automatic Raspberry Pi deployment,
 health checks, and service rollback will be added with the hardware/boot milestone.
+
+## Appliance implementation reference
+
+For #7, see [PiDeck startup and deployment lessons](pideck-reference.md#startup-and-deployment--7).
+Use its separation of soundcard setup and launch configuration as precedent, with
+owned services and bounded recovery. Its old image and broad process-killing
+launcher are not deployment instructions for this project.
 
 ## GitHub repository policy
 

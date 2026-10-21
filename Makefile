@@ -1,4 +1,4 @@
-.PHONY: setup lint typecheck test check format package xwax-smoke xwax-macos-smoke link-build link-test
+.PHONY: setup lint typecheck test check format package xwax-smoke xwax-linux-smoke xwax-macos-smoke link-build link-test
 
 setup:
 	uv sync --locked --all-groups
@@ -47,3 +47,12 @@ xwax-macos-smoke:
 	"$$scratch/engine/check-coreaudio-native" "$$scratch/engine/import" "$(CURDIR)/tests/fixtures/usb/Contents/Élise/Café 東京.wav"; \
 	uv run --locked python scripts/check_xwax.py --engine "$$scratch/engine/xwax" --importer "$$scratch/engine/import"; \
 	uv run --locked python scripts/check_streaming_xwax.py --engine "$$scratch/engine/xwax" --importer "$$scratch/engine/import"
+
+# Native ARM64 CI uses the same pinned engine and probes as the Docker target.
+xwax-linux-smoke:
+	@test "$$(uname -s)" = Linux
+	@set -eu; scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
+	sh scripts/xwax/build.sh "$$scratch/engine"; \
+	"$$scratch/engine/check-realtime" "$$scratch/engine/import" "$(CURDIR)/tests/fixtures/usb/Contents/Élise/Café 東京.wav"; \
+	PYTHONPATH=src python3 scripts/check_xwax.py --engine "$$scratch/engine/xwax" --importer "$$scratch/engine/import"; \
+	PYTHONPATH=src python3 scripts/check_streaming_xwax.py --engine "$$scratch/engine/xwax" --importer "$$scratch/engine/import"

@@ -28,6 +28,7 @@ class Peer:
         self.socket.settimeout(0.05)
         self.stop = Event()
         self.reads = []
+        self.read_received = Event()
         self.lookups = []
         self.cancel = None
         self.errors = []
@@ -82,6 +83,7 @@ class Peer:
                 elif program == 100003 and procedure == 6:
                     offset, count, _ = struct.unpack(">3I", payload[32:])
                     self.reads.append((xid, offset, count))
+                    self.read_received.set()
                     if self.fault == "timeout" or (self.fault == "drop" and len(self.reads) == 1):
                         continue
                     data = (

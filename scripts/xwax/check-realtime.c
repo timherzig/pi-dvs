@@ -131,7 +131,7 @@ static void mailbox_tests(struct deck *d)
     player_set_timecode_control(p, true);
 }
 
-struct client { const char *path; bool stalled; atomic_bool stop; unsigned replies; };
+struct client { const char *path; bool stalled; atomic_bool stop; atomic_uint replies; };
 static void *flood(void *arg)
 {
     struct client *c = arg;
@@ -147,9 +147,11 @@ static void *flood(void *arg)
         ssize_t n = send(fd, query, sizeof query - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (n != sizeof query - 1) {
             /* A non-reading peer fills the socket buffers. Darwin may report
-             * ENOBUFS instead of EAGAIN; a short write is also backpressure. */
+             * ENOBUFS instead of EAGAIN, or ENOTCONN after the server
+             * disconnects the slow reader; a short write is also backpressure. */
             if (c->stalled && (n >= 0 || errno == EAGAIN || errno == EWOULDBLOCK ||
-                              errno == ENOBUFS || errno == EPIPE || errno == ECONNRESET))
+                              errno == ENOBUFS || errno == EPIPE || errno == ECONNRESET ||
+                              errno == ENOTCONN))
                 break;
             if (n < 0 && errno == EINTR)
                 continue;
@@ -197,6 +199,14 @@ static void probe(struct deck *d, const char *label, struct client *client)
             audible += output[j] != 0;
     }
     if (client) {
+        /* Callback timings are not a scheduling deadline for the socket worker.
+         * Keep exercising guarded audio while giving a delayed worker a bounded
+         * chance to demonstrate the same required request/reply traffic. */
+        double deadline = now() + 5;
+        while (!client->stalled && atomic_load(&client->replies) <= 100 && now() < deadline) {
+            collect(d);
+            usleep(1000);
+        }
         atomic_store(&client->stop, true);
         assert(pthread_join(worker, NULL) == 0);
         if (!client->stalled)
