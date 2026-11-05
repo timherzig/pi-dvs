@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling<2,>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -22,7 +22,7 @@ pi-dvs = "pi_dvs.app:main"
 
 [dependency-groups]
 build = [
-    "hatchling==1.32.4",
+    "hatchling==1.33.0",
 ]
 dev = [
     "mypy>=2,<3",
